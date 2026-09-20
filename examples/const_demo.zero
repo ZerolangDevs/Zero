@@ -1,0 +1,14 @@
+// const_demo.zero - 不可变变量：name = expr<const>
+import io
+
+fn main() {
+    greeting = "Hello, Zero!"<const>
+    print("{}\n", greeting)
+
+    count = 10          // 默认可变
+    count = 11          // 可以重新赋值
+    print("count = {}\n", count)
+
+    // 下面这行如果取消注释会编译报错：
+    // greeting = "can't touch this"
+}

@@ -1,0 +1,4 @@
+// helpers.zh - a Zero header file (compiled recursively)
+fn greet() {
+    call_rust("println!(\"[helpers.zh] greet() called!\");")
+}

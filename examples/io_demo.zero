@@ -1,0 +1,16 @@
+// io_demo.zero - 标准库 io：print / input_s / input / set_stream
+import io
+
+fn main() {
+    set_stream("shell")
+
+    print("What is your name? ")
+    name = input_s()
+    print("Hello, {}!\n", name)
+
+    age = input("How old are you? ")
+    print("You are {} years old.\n", age)
+
+    x = 40
+    print("x = {}\n", x)
+}

@@ -1,0 +1,15 @@
+// func_demo.zero - 用户函数：参数（任意类型）与返回值
+import io
+
+fn describe(name, n) {
+    print("{} is {} years old.\n", name, n)
+    return name
+}
+
+fn main() {
+    // 默认流就是 shell，这里不调用 set_stream
+    result = describe("Zero", 18)
+    print("describe returned: {}\n", result)
+    msg = "done"
+    print("{}\n", msg)
+}

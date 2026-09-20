@@ -1,0 +1,353 @@
+//! Scope analysis for the Zero language.
+//!
+//! Every Zero program starts in the **highlevel** scope. A `scope highlevel
+//! { ... }` block opens a nested variable scope; a `scope lowlevel { ... }`
+//! block switches to raw Rust and is not analysed. Variables are dynamic:
+//! `name = expr` creates or overwrites a variable, and any read must resolve
+//! against the scope chain. Calls must target a builtin, an imported `io`
+//! function, or a known user function with a matching arity.
+
+use std::collections::HashMap;
+
+use crate::ast::*;
+use crate::diag::{CompileError, Span};
+
+/// Builtin function names understood by the compiler.
+mod callable;
+
+pub use callable::{FnInfo, BUILTIN_CALL_RUST, BUILTIN_CALL_SYS, IO_FUNCTIONS};
+
+struct Scope {
+    /// Variable name -> immutable flag. Assignment both creates and
+    /// overwrites a variable in the current scope.
+    symbols: HashMap<String, bool>,
+}
+
+pub struct ScopeAnalyzer<'a> {
+    /// All callable functions (user + io) known to the whole unit.
+    functions: &'a HashMap<String, FnInfo>,
+    /// True when `import io` is active: `print`/`input_s`/`input`/`set_stream`
+    /// are then treated as the standard IO API.
+    io_imported: bool,
+    scopes: Vec<Scope>,
+    file: String,
+}
+
+impl<'a> ScopeAnalyzer<'a> {
+    pub fn new(functions: &'a HashMap<String, FnInfo>, file: &str, io_imported: bool) -> Self {
+        let mut scopes = Vec::new();
+        scopes.push(Scope {
+            symbols: HashMap::new(),
+        });
+        ScopeAnalyzer {
+            functions,
+            io_imported,
+            scopes,
+            file: file.to_string(),
+        }
+    }
+
+    fn err(&self, message: impl Into<String>, span: Span) -> CompileError {
+        CompileError::at(message, self.file.clone(), span)
+    }
+
+    pub fn analyze_program(&mut self, prog: &Program) -> Result<(), CompileError> {
+        for item in &prog.items {
+            if let Item::Function(f) = item {
+                self.analyze_function(f)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn analyze_function(&mut self, f: &Function) -> Result<(), CompileError> {
+        let Block::Stmts(stmts) = &f.body else {
+            return Err(self.err("function body must be a highlevel block", f.span));
+        };
+        // Function bodies open a fresh highlevel scope; parameters are in
+        // scope and may be reassigned.
+        let mut scope = Scope {
+            symbols: HashMap::new(),
+        };
+        for p in &f.params {
+            scope.symbols.insert(p.clone(), false);
+        }
+        self.scopes.push(scope);
+        let result = self.analyze_stmts(stmts);
+        self.scopes.pop();
+        result
+    }
+
+    fn analyze_stmts(&mut self, stmts: &[Stmt]) -> Result<(), CompileError> {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Assign {
+                    name,
+                    value,
+                    is_const,
+                    span,
+                } => {
+                    self.analyze_expr(value)?;
+                    let result = {
+                        let current = self.current_mut();
+                        match current.symbols.get(name).copied() {
+                            Some(prev_const) => {
+                                if *is_const {
+                                    Err(format!(
+                                        "cannot declare immutable variable '{name}': it already exists in this scope"
+                                    ))
+                                } else if prev_const {
+                                    Err(format!("cannot assign to immutable variable '{name}'"))
+                                } else {
+                                    Ok(())
+                                }
+                            }
+                            None => {
+                                current.symbols.insert(name.clone(), *is_const);
+                                Ok(())
+                            }
+                        }
+                    };
+                    result.map_err(|m| self.err(m, *span))?;
+                }
+                Stmt::Expr(expr) => {
+                    // Bare identifiers as statements are allowed (no-op).
+                    self.analyze_expr(expr)?;
+                }
+                Stmt::Return { value } => {
+                    if let Some(e) = value {
+                        self.analyze_expr(e)?;
+                    }
+                }
+                Stmt::Scope { kind, block, span } => {
+                    let _ = span;
+                    match kind {
+                        ScopeKind::HighLevel => {
+                            let Block::Stmts(stmts) = block else {
+                                return Err(
+                                    self.err("highlevel scope cannot contain raw code", *span)
+                                );
+                            };
+                            self.scopes.push(Scope {
+                                symbols: HashMap::new(),
+                            });
+                            let result = self.analyze_stmts(stmts);
+                            self.scopes.pop();
+                            result?;
+                        }
+                        ScopeKind::LowLevel => {
+                            // Raw Rust: nothing to analyse at Zero level.
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn analyze_expr(&mut self, expr: &Expr) -> Result<(), CompileError> {
+        match expr {
+            Expr::Int(..) | Expr::Str(..) => Ok(()),
+            Expr::Ident(name, span) => {
+                if self.resolve(name).is_none() {
+                    Err(self.err(format!("undefined variable '{name}'"), *span))
+                } else {
+                    Ok(())
+                }
+            }
+            Expr::Call { callee, args, span } => {
+                for arg in args {
+                    self.analyze_expr(arg)?;
+                }
+                self.check_call(callee, args, span)
+            }
+        }
+    }
+
+    fn check_call(&self, callee: &str, args: &[Expr], span: &Span) -> Result<(), CompileError> {
+        match callee {
+            BUILTIN_CALL_RUST => {
+                if args.len() != 1 {
+                    return Err(self.err(
+                        "call_rust takes exactly 1 argument (a Rust code string)",
+                        *span,
+                    ));
+                }
+                if !matches!(args[0], Expr::Str(..)) {
+                    return Err(self.err(
+                        "call_rust requires a string literal of Rust code",
+                        args[0].span(),
+                    ));
+                }
+                Ok(())
+            }
+            BUILTIN_CALL_SYS => {
+                if args.len() != 1 {
+                    return Err(self.err(
+                        "call_sys takes exactly 1 argument (a command string)",
+                        *span,
+                    ));
+                }
+                Ok(())
+            }
+            "print" | "input" if self.io_imported => {
+                if args.is_empty() {
+                    return Err(self.err(
+                        format!("{callee} takes a format string plus optional values"),
+                        *span,
+                    ));
+                }
+                Ok(())
+            }
+            "input_s" if self.io_imported => {
+                if !args.is_empty() {
+                    return Err(self.err("input_s takes no arguments", *span));
+                }
+                Ok(())
+            }
+            "set_stream" if self.io_imported => {
+                if args.len() < 1 || args.len() > 2 {
+                    return Err(self.err(
+                        "set_stream takes a stream type ('shell' or 'file') and an optional filename",
+                        *span,
+                    ));
+                }
+                Ok(())
+            }
+            other => match self.functions.get(other) {
+                Some(info) => {
+                    if let Some(k) = info.arity {
+                        if args.len() != k {
+                            return Err(self.err(
+                                format!(
+                                    "function '{other}' takes {k} argument(s), found {}",
+                                    args.len()
+                                ),
+                                *span,
+                            ));
+                        }
+                    }
+                    Ok(())
+                }
+                None => Err(self.err(format!("unknown function '{other}'"), *span)),
+            },
+        }
+    }
+
+    fn current_mut(&mut self) -> &mut Scope {
+        self.scopes.last_mut().expect("scope stack never empty")
+    }
+
+    /// Resolve a variable name against the scope chain (innermost first).
+    fn resolve(&self, name: &str) -> Option<&Scope> {
+        self.scopes
+            .iter()
+            .rev()
+            .find(|s| s.symbols.contains_key(name))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::parse;
+
+    fn functions_of(prog: &Program) -> HashMap<String, FnInfo> {
+        prog.functions()
+            .map(|f| {
+                (
+                    f.name.clone(),
+                    FnInfo {
+                        arity: Some(f.params.len()),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn analyze(src: &str, io_imported: bool) -> Result<(), CompileError> {
+        let prog = parse(src, "test.zero").unwrap();
+        let fns = functions_of(&prog);
+        ScopeAnalyzer::new(&fns, "test.zero", io_imported).analyze_program(&prog)
+    }
+
+    #[test]
+    fn resolves_variables_across_scopes() {
+        analyze("fn main() { x = 1\nscope highlevel { y = x } }", false).unwrap();
+    }
+
+    #[test]
+    fn rejects_undefined_variable() {
+        let err = analyze("fn main() { y = missing }", false).unwrap_err();
+        assert!(err.message.contains("undefined variable 'missing'"));
+    }
+
+    #[test]
+    fn rejects_unknown_function() {
+        let err = analyze("fn main() { nope() }", false).unwrap_err();
+        assert!(err.message.contains("unknown function 'nope'"));
+    }
+
+    #[test]
+    fn call_rust_requires_literal_string() {
+        let err = analyze("fn main() { code = \"x\"\ncall_rust(code) }", false).unwrap_err();
+        assert!(err.message.contains("string literal"));
+    }
+
+    #[test]
+    fn checks_arity() {
+        let err = analyze("fn add(a, b) { return a }\nfn main() { add(1) }", false).unwrap_err();
+        assert!(err.message.contains("takes 2 argument(s)"));
+    }
+
+    #[test]
+    fn io_functions_require_import() {
+        let err = analyze("fn main() { print(\"hi\") }", false).unwrap_err();
+        assert!(err.message.contains("unknown function 'print'"));
+    }
+
+    #[test]
+    fn io_functions_work_when_imported() {
+        analyze(
+            "fn main() { print(\"hi {}\", 1)\ninput_s()\nset_stream(\"shell\") }",
+            true,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn set_stream_arity() {
+        let err = analyze("fn main() { set_stream(\"a\", \"b\", \"c\") }", true).unwrap_err();
+        assert!(err.message.contains("optional filename"));
+    }
+
+    #[test]
+    fn const_cannot_be_reassigned() {
+        let err = analyze("fn main() { x = 1<const>\nx = 2 }", false).unwrap_err();
+        assert!(err
+            .message
+            .contains("cannot assign to immutable variable 'x'"));
+    }
+
+    #[test]
+    fn mutable_can_be_reassigned() {
+        analyze("fn main() { x = 1\nx = 2 }", false).unwrap();
+    }
+
+    #[test]
+    fn cannot_redeclare_const_with_marker() {
+        let err = analyze("fn main() { x = 1\nx = 2<const> }", false).unwrap_err();
+        assert!(err.message.contains("it already exists in this scope"));
+    }
+
+    #[test]
+    fn const_can_be_shadowed_in_inner_scope() {
+        // An inner-scope assignment creates a new variable; the outer const
+        // is untouched, so this is legal.
+        analyze(
+            "fn main() { x = 1<const>\nscope highlevel { x = 2 } }",
+            false,
+        )
+        .unwrap();
+    }
+}

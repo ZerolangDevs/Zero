@@ -1,0 +1,13 @@
+[package]
+name = "zeroc"
+version = "0.1.0"
+edition = "2021"
+description = "Zero compiler - a small language that compiles to Rust"
+license = "MPL-2.0"
+
+[[bin]]
+name = "zeroc"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3

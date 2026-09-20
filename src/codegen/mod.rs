@@ -1,0 +1,336 @@
+//! Rust code generation for the Zero language.
+//!
+//! The generated output is a single self-contained `.rs` file:
+//! ZVal runtime -> `use` imports -> inlined raw headers -> runtime helpers
+//! -> functions. Every Zero variable is a dynamic `ZVal`; every function
+//! takes `ZVal` parameters and returns `ZVal`.
+
+use std::collections::{HashMap, HashSet};
+
+use crate::ast::*;
+use crate::import::{Loader, BUILTIN_IMPORTS};
+use crate::scope::{BUILTIN_CALL_RUST, BUILTIN_CALL_SYS};
+
+/// Dynamic-value runtime injected at the top of every generated file.
+mod emit;
+mod runtime;
+
+use emit::{ends_with_return, escape_rust_string, rust_block, INDENT};
+use runtime::{preamble, ZVAL_RUNTIME};
+
+pub struct Codegen<'a> {
+    src_name: &'a str,
+    imports: Vec<String>,
+    body: String,
+    indent: usize,
+    /// True when the `io` standard header has been imported.
+    io_imported: bool,
+    used_call_sys: bool,
+    emitted_builtins: HashSet<String>,
+    /// Zero variables declared per active block: name -> immutable flag.
+    /// Controls `let`/`let mut` on first declaration vs plain reassignment.
+    blocks: Vec<HashMap<String, bool>>,
+}
+
+/// Compile a program (plus everything loaded from its headers) to Rust.
+pub fn generate(prog: &Program, loader: &Loader, src_name: &str) -> String {
+    let mut cg = Codegen {
+        src_name,
+        imports: Vec::new(),
+        body: String::new(),
+        indent: 0,
+        io_imported: loader.io_imported,
+        used_call_sys: false,
+        emitted_builtins: HashSet::new(),
+        blocks: Vec::new(),
+    };
+
+    // 1. builtin header aliases -> `use` statements
+    for alias in &loader.builtins {
+        if let Some(use_stmt) = BUILTIN_IMPORTS.iter().find(|(a, _)| a == alias) {
+            if cg.emitted_builtins.insert(use_stmt.1.to_string()) {
+                cg.imports.push(use_stmt.1.to_string());
+            }
+        }
+    }
+
+    // 2. raw Rust headers, inlined verbatim (std/stream* + user headers)
+    for (display, content) in &loader.rust_headers {
+        cg.imports
+            .push(format!("// ---- import: {display} ----\n{content}"));
+    }
+
+    // 3. functions from Zero headers (the entry point stays in the main file)
+    for (display, hprog) in &loader.zero_headers {
+        cg.line(&format!("// ---- import: {display} ----"));
+        for f in hprog.functions() {
+            if f.name != "main" {
+                cg.gen_function(f);
+            }
+        }
+    }
+
+    // 4. functions from the main program
+    for f in prog.functions() {
+        cg.gen_function(f);
+    }
+
+    cg.assemble()
+}
+
+impl<'a> Codegen<'a> {
+    fn line(&mut self, text: &str) {
+        for _ in 0..self.indent {
+            self.body.push_str(INDENT);
+        }
+        self.body.push_str(text);
+        self.body.push('\n');
+    }
+
+    fn gen_function(&mut self, f: &Function) {
+        let params: Vec<String> = f.params.iter().map(|p| format!("{p}: ZVal")).collect();
+        self.line(&format!("fn {}({}) -> ZVal {{", f.name, params.join(", ")));
+        self.indent += 1;
+        self.blocks
+            .push(f.params.iter().map(|p| (p.clone(), false)).collect());
+        if let Block::Stmts(stmts) = &f.body {
+            self.gen_stmts(stmts);
+            if !ends_with_return(stmts) {
+                self.line("return ZVal::Nil;");
+            }
+        }
+        self.blocks.pop();
+        self.indent -= 1;
+        self.line("}");
+    }
+
+    fn gen_stmts(&mut self, stmts: &[Stmt]) {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Assign {
+                    name,
+                    value,
+                    is_const,
+                    ..
+                } => {
+                    let expr = self.gen_expr(value);
+                    let current = self.blocks.last_mut().expect("block stack");
+                    if current.contains_key(name) {
+                        // Mutable reassignment; the analyzer blocks const.
+                        self.line(&format!("{name} = {expr};"));
+                    } else {
+                        let kw = if *is_const { "let" } else { "let mut" };
+                        current.insert(name.clone(), *is_const);
+                        self.line(&format!("{kw} {name}: ZVal = {expr};"));
+                    }
+                }
+                Stmt::Expr(expr) => {
+                    let code = self.gen_expr(expr);
+                    self.line(&format!("{code};"));
+                }
+                Stmt::Return { value, .. } => match value {
+                    Some(e) => {
+                        let code = self.gen_expr(e);
+                        self.line(&format!("return {code};"));
+                    }
+                    None => self.line("return ZVal::Nil;"),
+                },
+                Stmt::Scope { kind, block, .. } => {
+                    self.line("{");
+                    self.indent += 1;
+                    self.blocks.push(HashMap::new());
+                    match (kind, block) {
+                        (ScopeKind::HighLevel, Block::Stmts(stmts)) => {
+                            self.gen_stmts(stmts);
+                        }
+                        (ScopeKind::LowLevel, Block::Raw(text)) => {
+                            for raw_line in text.lines() {
+                                let trimmed = raw_line.trim_end();
+                                if trimmed.is_empty() {
+                                    self.body.push('\n');
+                                } else {
+                                    self.line(trimmed);
+                                }
+                            }
+                        }
+                        _ => {
+                            self.line("// unreachable: malformed scope block");
+                        }
+                    }
+                    self.blocks.pop();
+                    self.indent -= 1;
+                    self.line("}");
+                }
+            }
+        }
+    }
+
+    fn gen_expr(&mut self, expr: &Expr) -> String {
+        match expr {
+            Expr::Int(v, _) => format!("ZVal::Int({v})"),
+            Expr::Str(s, _) => format!("ZVal::Str({}.into())", escape_rust_string(s)),
+            Expr::Ident(name, _) => format!("{name}.clone()"),
+            Expr::Call {
+                callee,
+                args,
+                span: _,
+            } => match callee.as_str() {
+                BUILTIN_CALL_RUST => {
+                    // The analyzer guarantees args[0] is a string literal.
+                    let Expr::Str(raw, _) = &args[0] else {
+                        return "/* invalid call_rust */".to_string();
+                    };
+                    rust_block(raw, self.indent)
+                }
+                BUILTIN_CALL_SYS => {
+                    self.used_call_sys = true;
+                    // The command must reach Rust as a `&str`, not a ZVal.
+                    let arg = self.gen_io_str_arg(&args[0]);
+                    format!("__zero_sys({arg})")
+                }
+                "print" | "input" if self.io_imported => {
+                    let fmt = self.gen_io_str_arg(&args[0]);
+                    let rest: Vec<String> = args[1..].iter().map(|a| self.gen_expr(a)).collect();
+                    format!("{callee}({fmt}, &[{}])", rest.join(", "))
+                }
+                "input_s" if self.io_imported => "input_s()".to_string(),
+                "set_stream" if self.io_imported => {
+                    let kind = self.gen_io_str_arg(&args[0]);
+                    let name = if args.len() >= 2 {
+                        format!("Some({})", self.gen_io_str_arg(&args[1]))
+                    } else {
+                        "None".to_string()
+                    };
+                    format!("set_stream({kind}, {name})")
+                }
+                _ => {
+                    let args_code: Vec<String> = args.iter().map(|a| self.gen_expr(a)).collect();
+                    format!("{callee}({})", args_code.join(", "))
+                }
+            },
+        }
+    }
+
+    /// Render an argument that must reach Rust as a `&str`: string literals
+    /// stay literals, everything else is stringified via the ZVal runtime.
+    fn gen_io_str_arg(&mut self, expr: &Expr) -> String {
+        match expr {
+            Expr::Str(s, _) => escape_rust_string(s),
+            other => format!("&{}.to_rust_string()", self.gen_expr(other)),
+        }
+    }
+
+    fn assemble(&self) -> String {
+        let mut out = String::new();
+        out.push_str("#![allow(unused, dead_code)]\n");
+        out.push_str("// Generated by Zero compiler (zeroc v0.2.0)\n");
+        out.push_str(&format!("// Source: {}\n", self.src_name));
+        out.push('\n');
+        out.push_str(ZVAL_RUNTIME);
+        out.push('\n');
+        if !self.imports.is_empty() {
+            for imp in &self.imports {
+                out.push_str(imp);
+                out.push_str("\n\n");
+            }
+        }
+        if self.used_call_sys {
+            out.push_str(&preamble());
+            out.push('\n');
+        }
+        out.push_str(&self.body);
+        out
+    }
+}
+
+/// True when the function body already ends with an explicit `return`.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::import::Loader;
+    use crate::parser::parse;
+    use std::path::Path;
+
+    fn generate_for(src: &str) -> String {
+        let prog = parse(src, "test.zero").unwrap();
+        let mut loader = Loader::new(Path::new("."));
+        loader.register_main(&prog, "test.zero").unwrap();
+        loader.load(&prog, "test.zero").unwrap();
+        generate(&prog, &loader, "test.zero")
+    }
+
+    #[test]
+    fn always_injects_zval_runtime() {
+        let out = generate_for("fn main() { call_sys(\"echo hi\") }");
+        assert!(out.contains("pub enum ZVal"));
+        assert!(out.contains("fn __zero_sys(command: &str) -> i32"));
+        assert!(out.contains("fn main() -> ZVal {"));
+        assert!(out.contains("return ZVal::Nil;"));
+    }
+
+    #[test]
+    fn inlines_call_rust() {
+        let out = generate_for(r#"fn main() { call_rust("println!(\"hi\");") }"#);
+        assert!(out.contains("{ println!(\"hi\"); };"));
+    }
+
+    #[test]
+    fn variables_declare_then_reassign() {
+        let out = generate_for("fn main() { x = 1\nx = 2 }");
+        assert!(out.contains("let mut x: ZVal = ZVal::Int(1);"));
+        assert!(out.contains("x = ZVal::Int(2);"));
+    }
+
+    #[test]
+    fn const_emits_immutable_let() {
+        let out = generate_for("fn main() { x = 1<const>\nx = 2 }");
+        // The analyzer would reject the reassignment; codegen itself only
+        // decides let vs let mut from the marker.
+        assert!(out.contains("let x: ZVal = ZVal::Int(1);"));
+        assert!(!out.contains("let mut x: ZVal"));
+    }
+
+    #[test]
+    fn function_params_and_return() {
+        let out = generate_for("fn add(a, b) { return a }\nfn main() { add(1, 2) }");
+        assert!(out.contains("fn add(a: ZVal, b: ZVal) -> ZVal {"));
+        assert!(out.contains("add(ZVal::Int(1), ZVal::Int(2));"));
+        // no trailing auto-return because the body already returns
+        assert!(!out
+            .contains("fn add(a: ZVal, b: ZVal) -> ZVal {\n    return a;\n    return ZVal::Nil;"));
+    }
+
+    #[test]
+    fn io_functions_emit_std_calls() {
+        let out = generate_for(
+            "import io\nfn main() { print(\"hi {}\", 1)\ninput_s()\nset_stream(\"file\", \"a.txt\") }",
+        );
+        assert!(out.contains("print(\"hi {}\", &[ZVal::Int(1)]);"));
+        assert!(out.contains("input_s();"));
+        assert!(out.contains("set_stream(\"file\", Some(\"a.txt\"));"));
+        assert!(out.contains("std/stream.rs"));
+        assert!(out.contains("std/stream_io.rs"));
+        assert!(out.contains("std/io.rs"));
+    }
+
+    #[test]
+    fn io_not_imported_keeps_user_fn() {
+        let out = generate_for("fn print(a) { return a }\nfn main() { print(1) }");
+        assert!(out.contains("fn print(a: ZVal) -> ZVal {"));
+        assert!(out.contains("print(ZVal::Int(1));"));
+    }
+
+    #[test]
+    fn scopes_become_rust_blocks() {
+        let out = generate_for(
+            "fn main() { x = 1\nscope highlevel { x = 2 }\nscope lowlevel { let y = 3; } }",
+        );
+        assert_eq!(out.matches("let mut x: ZVal =").count(), 2);
+        assert!(out.contains("let y = 3;"));
+    }
+
+    #[test]
+    fn escapes_strings() {
+        assert_eq!(escape_rust_string("a\"b\\c"), "\"a\\\"b\\\\c\"");
+    }
+}

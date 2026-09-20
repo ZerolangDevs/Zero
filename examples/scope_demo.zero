@@ -1,0 +1,25 @@
+// scope_demo.zero - scope mechanism: highlevel (default) / lowlevel
+import stdio
+
+fn main() {
+    name = "Zero"
+
+    // call_rust runs in an implicit lowlevel scope and can see
+    // variables declared in the surrounding highlevel scope.
+    call_rust("println!(\"highlevel var: {}\", name);")
+
+    // A highlevel scope block: shadowing inside, restored outside.
+    scope highlevel {
+        name = "inner Zero"
+        call_rust("println!(\"inner scope var: {}\", name);")
+    }
+
+    call_rust("println!(\"back to outer var: {}\", name);")
+
+    // Explicit lowlevel scope: raw Rust, scoped to this block.
+    scope lowlevel {
+        let x = 40;
+        let y = 2;
+        println!("lowlevel scope: x + y = {}", x + y);
+    }
+}

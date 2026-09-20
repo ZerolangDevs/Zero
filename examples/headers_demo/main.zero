@@ -1,0 +1,9 @@
+// main.zero - header imports: .zh (compiled Zero) and .rs (raw Rust)
+import stdio
+import "headers/helpers"
+import "headers/extra.rs"
+
+fn main() {
+    greet()
+    rust_helper()
+}

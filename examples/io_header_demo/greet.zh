@@ -1,0 +1,6 @@
+// greet.zh - 头文件内部 import io，依赖链自动注入
+import io
+
+fn greet(who) {
+    print("hi, {}!\n", who)
+}

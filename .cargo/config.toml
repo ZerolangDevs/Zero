@@ -1,0 +1,4 @@
+# This machine has no MSVC link.exe available; use the lld linker bundled
+# with the Rust toolchain instead. Works everywhere, not just here.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"

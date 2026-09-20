@@ -1,0 +1,8 @@
+// main.zero - .zh 头文件内部也使用 io
+import io
+import "greet"
+
+fn main() {
+    greet("world")
+    print("[main] back in main\n")
+}
