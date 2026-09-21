@@ -141,10 +141,6 @@ impl<'a> Lexer<'a> {
 
     fn lex_number(&mut self, start: usize) -> Result<TokKind, CompileError> {
         let mut text = String::new();
-        if self.src[self.pos..].starts_with('-') {
-            text.push('-');
-            self.bump();
-        }
         while let Some(c) = self.peek_char() {
             if c.is_ascii_digit() {
                 text.push(c);
@@ -175,12 +171,17 @@ impl<'a> Lexer<'a> {
         let word = &self.src[start..self.pos];
         match word {
             "fn" => TokKind::Fn,
+            "func" => TokKind::Func,
             "return" => TokKind::Return,
             "import" => TokKind::Import,
             "scope" => TokKind::Scope,
             "highlevel" => TokKind::HighLevel,
             "lowlevel" => TokKind::LowLevel,
             "const" => TokKind::Const,
+            "true" => TokKind::True,
+            "false" => TokKind::False,
+            "and" => TokKind::And,
+            "or" => TokKind::Or,
             _ => TokKind::Ident(word.to_string()),
         }
     }
@@ -216,6 +217,10 @@ impl<'a> Lexer<'a> {
                 self.bump();
                 TokKind::Semi
             }
+            ':' => {
+                self.bump();
+                TokKind::Colon
+            }
             ',' => {
                 self.bump();
                 TokKind::Comma
@@ -224,20 +229,85 @@ impl<'a> Lexer<'a> {
                 self.bump();
                 TokKind::Dot
             }
+            '+' => {
+                self.bump();
+                TokKind::Plus
+            }
+            '-' => {
+                self.bump();
+                if self.peek_char() == Some('>') {
+                    self.bump();
+                    TokKind::Arrow
+                } else {
+                    TokKind::Minus
+                }
+            }
+            '*' => {
+                self.bump();
+                TokKind::Star
+            }
+            '/' => {
+                self.bump();
+                TokKind::Slash
+            }
+            '%' => {
+                self.bump();
+                TokKind::Percent
+            }
+            '!' => {
+                self.bump();
+                if self.peek_char() == Some('=') {
+                    self.bump();
+                    TokKind::BangEq
+                } else {
+                    TokKind::Bang
+                }
+            }
+            '&' => {
+                let end = start + 1;
+                return Err(CompileError::at(
+                    "unexpected character '&' (use the keyword 'and')",
+                    "<source>",
+                    Span::new(start, end),
+                ));
+            }
+            '|' => {
+                let end = start + 1;
+                return Err(CompileError::at(
+                    "unexpected character '|' (use the keyword 'or')",
+                    "<source>",
+                    Span::new(start, end),
+                ));
+            }
             '<' => {
                 self.bump();
-                TokKind::Lt
+                if self.peek_char() == Some('=') {
+                    self.bump();
+                    TokKind::Le
+                } else {
+                    TokKind::Lt
+                }
             }
             '>' => {
                 self.bump();
-                TokKind::Gt
+                if self.peek_char() == Some('=') {
+                    self.bump();
+                    TokKind::Ge
+                } else {
+                    TokKind::Gt
+                }
             }
             '=' => {
                 self.bump();
-                TokKind::Equal
+                if self.peek_char() == Some('=') {
+                    self.bump();
+                    TokKind::EqEq
+                } else {
+                    TokKind::Equal
+                }
             }
             '"' => self.lex_string(start)?,
-            '-' | '0'..='9' => self.lex_number(start)?,
+            '0'..='9' => self.lex_number(start)?,
             c if c.is_alphabetic() || c == '_' => self.lex_ident(),
             other => {
                 let end = start + other.len_utf8();

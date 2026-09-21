@@ -76,6 +76,7 @@ impl Loader {
             f.name.clone(),
             FnInfo {
                 arity: Some(f.params.len()),
+                params: f.params.iter().map(|p| p.ty).collect(),
             },
         );
         Ok(())
@@ -196,6 +197,7 @@ impl Loader {
                 self.functions.entry(fname.to_string()).or_insert(FnInfo {
                     // Arity is checked specially by the analyzer.
                     arity: None,
+                    params: Vec::new(),
                 });
             }
         }
@@ -236,9 +238,10 @@ impl Loader {
                 }
                 if j > start {
                     let name = &content[start..j];
-                    self.functions
-                        .entry(name.to_string())
-                        .or_insert(FnInfo { arity: None });
+                    self.functions.entry(name.to_string()).or_insert(FnInfo {
+                        arity: None,
+                        params: Vec::new(),
+                    });
                 }
                 i = j;
             } else {

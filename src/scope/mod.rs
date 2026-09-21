@@ -30,6 +30,8 @@ pub struct ScopeAnalyzer<'a> {
     /// are then treated as the standard IO API.
     io_imported: bool,
     scopes: Vec<Scope>,
+    /// Declared return type of the function being analysed (None outside).
+    current_ret: Option<ZType>,
     file: String,
 }
 
@@ -43,6 +45,7 @@ impl<'a> ScopeAnalyzer<'a> {
             functions,
             io_imported,
             scopes,
+            current_ret: None,
             file: file.to_string(),
         }
     }
@@ -70,10 +73,12 @@ impl<'a> ScopeAnalyzer<'a> {
             symbols: HashMap::new(),
         };
         for p in &f.params {
-            scope.symbols.insert(p.clone(), false);
+            scope.symbols.insert(p.name.clone(), false);
         }
         self.scopes.push(scope);
+        self.current_ret = f.ret;
         let result = self.analyze_stmts(stmts);
+        self.current_ret = None;
         self.scopes.pop();
         result
     }
@@ -117,6 +122,20 @@ impl<'a> ScopeAnalyzer<'a> {
                 Stmt::Return { value } => {
                     if let Some(e) = value {
                         self.analyze_expr(e)?;
+                        if let Some(declared) = self.current_ret {
+                            if let Some(found) = literal_type(e) {
+                                if declared != found {
+                                    return Err(self.err(
+                                        format!(
+                                            "function returns {}, but declared to return {}",
+                                            found.name(),
+                                            declared.name()
+                                        ),
+                                        e.span(),
+                                    ));
+                                }
+                            }
+                        }
                     }
                 }
                 Stmt::Scope { kind, block, span } => {
@@ -147,7 +166,7 @@ impl<'a> ScopeAnalyzer<'a> {
 
     fn analyze_expr(&mut self, expr: &Expr) -> Result<(), CompileError> {
         match expr {
-            Expr::Int(..) | Expr::Str(..) => Ok(()),
+            Expr::Int(..) | Expr::Str(..) | Expr::Bool(..) => Ok(()),
             Expr::Ident(name, span) => {
                 if self.resolve(name).is_none() {
                     Err(self.err(format!("undefined variable '{name}'"), *span))
@@ -161,6 +180,11 @@ impl<'a> ScopeAnalyzer<'a> {
                 }
                 self.check_call(callee, args, span)
             }
+            Expr::Binary { lhs, rhs, .. } => {
+                self.analyze_expr(lhs)?;
+                self.analyze_expr(rhs)
+            }
+            Expr::Unary { operand, .. } => self.analyze_expr(operand),
         }
     }
 
@@ -227,11 +251,39 @@ impl<'a> ScopeAnalyzer<'a> {
                             ));
                         }
                     }
-                    Ok(())
+                    self.check_arg_types(other, args, info, span)
                 }
                 None => Err(self.err(format!("unknown function '{other}'"), *span)),
             },
         }
+    }
+
+    /// Statically check literal arguments against declared parameter types.
+    /// Non-literal (dynamic) arguments are left to runtime checks.
+    fn check_arg_types(
+        &self,
+        callee: &str,
+        args: &[Expr],
+        info: &FnInfo,
+        span: &Span,
+    ) -> Result<(), CompileError> {
+        for (i, (arg, declared)) in args.iter().zip(info.params.iter()).enumerate() {
+            let Some(declared) = declared else { continue };
+            if let Some(found) = literal_type(arg) {
+                if *declared != found {
+                    return Err(self.err(
+                        format!(
+                            "argument {} of '{callee}' expects {}, found {}",
+                            i + 1,
+                            declared.name(),
+                            found.name(),
+                        ),
+                        *span,
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn current_mut(&mut self) -> &mut Scope {
@@ -247,6 +299,16 @@ impl<'a> ScopeAnalyzer<'a> {
     }
 }
 
+/// The static type of a literal expression, if it has one.
+fn literal_type(expr: &Expr) -> Option<ZType> {
+    match expr {
+        Expr::Int(..) => Some(ZType::Int),
+        Expr::Str(..) => Some(ZType::Str),
+        Expr::Bool(..) => Some(ZType::Bool),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,6 +321,7 @@ mod tests {
                     f.name.clone(),
                     FnInfo {
                         arity: Some(f.params.len()),
+                        params: f.params.iter().map(|p| p.ty).collect(),
                     },
                 )
             })
@@ -338,6 +401,39 @@ mod tests {
     fn cannot_redeclare_const_with_marker() {
         let err = analyze("fn main() { x = 1\nx = 2<const> }", false).unwrap_err();
         assert!(err.message.contains("it already exists in this scope"));
+    }
+
+    #[test]
+    fn checks_argument_literal_types() {
+        // int 参数收到 string 字面量 -> 编译期报错
+        let err = analyze("func add(a<int>): { }\nfn main() { add(\"x\") }", false).unwrap_err();
+        assert!(err
+            .message
+            .contains("argument 1 of 'add' expects int, found string"));
+        // 正确类型通过；变量参数不静态检查
+        analyze(
+            "func add(a<int>): { }\nfn main() { x = 5\nadd(1)\nadd(x) }",
+            false,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn checks_return_literal_types() {
+        let err = analyze("func f() -> int: \"abc\"", false).unwrap_err();
+        assert!(err
+            .message
+            .contains("returns string, but declared to return int"));
+        analyze("func f() -> int: 1\nfunc g() -> string: \"ok\"", false).unwrap();
+    }
+
+    #[test]
+    fn operator_operands_are_checked() {
+        // Undefined variable inside an operator expression is an error.
+        let err = analyze("fn main() { x = a + 1 }", false).unwrap_err();
+        assert!(err.message.contains("undefined variable 'a'"));
+        // Valid operator expressions pass.
+        analyze("fn main() { x = 1 + 2 * 3\ny = x > 1\nz = !y }", false).unwrap();
     }
 
     #[test]

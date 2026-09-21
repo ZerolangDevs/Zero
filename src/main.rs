@@ -17,7 +17,7 @@ use std::process::ExitCode;
 use diag::CompileError;
 
 const USAGE: &str = "\
-Zero compiler (zeroc) v0.1.0
+Zero compiler (zeroc) v0.3.0
 Compiles Zero source code to Rust.
 
 USAGE:

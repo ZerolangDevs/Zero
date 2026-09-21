@@ -1,0 +1,26 @@
+// func_typed.zero - func 关键字：类型标注 + 冒号函数体 + return
+import io
+
+// 单表达式体：冒号后直接是表达式，自动返回
+func add(a<int>, b<int>) -> int: a + b
+
+// 块体：冒号后是 { ... }，支持多语句和显式 return
+func describe(name<string>, age<int>) -> string: {
+    print("  [describe] {} is {} years old\n", name, age)
+    return name + " (" + age + ")"
+}
+
+func main(): {
+    x = add(3, 4)
+    print("add(3, 4) = {}\n", x)
+
+    msg = describe("Zero", 18)
+    print("describe returned: {}\n", msg)
+
+    y = add(10, 20) * 2
+    print("add(10, 20) * 2 = {}\n", y)
+
+    // 参数类型在运行时校验（变量传入错误类型会报错终止）
+    bad = "not a number"
+    // z = add(bad, 1)   // 取消注释：运行时 type error
+}

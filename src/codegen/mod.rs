@@ -30,6 +30,8 @@ pub struct Codegen<'a> {
     /// Zero variables declared per active block: name -> immutable flag.
     /// Controls `let`/`let mut` on first declaration vs plain reassignment.
     blocks: Vec<HashMap<String, bool>>,
+    /// Declared return type of the function being generated (None outside).
+    current_ret: Option<ZType>,
 }
 
 /// Compile a program (plus everything loaded from its headers) to Rust.
@@ -43,6 +45,7 @@ pub fn generate(prog: &Program, loader: &Loader, src_name: &str) -> String {
         used_call_sys: false,
         emitted_builtins: HashSet::new(),
         blocks: Vec::new(),
+        current_ret: None,
     };
 
     // 1. builtin header aliases -> `use` statements
@@ -88,17 +91,33 @@ impl<'a> Codegen<'a> {
     }
 
     fn gen_function(&mut self, f: &Function) {
-        let params: Vec<String> = f.params.iter().map(|p| format!("{p}: ZVal")).collect();
+        let params: Vec<String> = f
+            .params
+            .iter()
+            .map(|p| format!("{}: ZVal", p.name))
+            .collect();
         self.line(&format!("fn {}({}) -> ZVal {{", f.name, params.join(", ")));
         self.indent += 1;
         self.blocks
-            .push(f.params.iter().map(|p| (p.clone(), false)).collect());
+            .push(f.params.iter().map(|p| (p.name.clone(), false)).collect());
+        // Runtime type checks for annotated parameters.
+        for p in &f.params {
+            if let Some(ty) = &p.ty {
+                self.line(&format!(
+                    "__zero_check_type(&{}, {});",
+                    p.name,
+                    ztype_code(ty)
+                ));
+            }
+        }
+        self.current_ret = f.ret;
         if let Block::Stmts(stmts) = &f.body {
             self.gen_stmts(stmts);
             if !ends_with_return(stmts) {
-                self.line("return ZVal::Nil;");
+                self.line(&self.checked_nil_return());
             }
         }
+        self.current_ret = None;
         self.blocks.pop();
         self.indent -= 1;
         self.line("}");
@@ -128,13 +147,20 @@ impl<'a> Codegen<'a> {
                     let code = self.gen_expr(expr);
                     self.line(&format!("{code};"));
                 }
-                Stmt::Return { value, .. } => match value {
-                    Some(e) => {
-                        let code = self.gen_expr(e);
-                        self.line(&format!("return {code};"));
+                Stmt::Return { value } => {
+                    let expr = match value {
+                        Some(e) => self.gen_expr(e),
+                        None => "ZVal::Nil".to_string(),
+                    };
+                    match &self.current_ret {
+                        Some(ty) => {
+                            let code =
+                                format!("return __zero_check_type(&{expr}, {});", ztype_code(ty));
+                            self.line(&code);
+                        }
+                        _ => self.line(&format!("return {expr};")),
                     }
-                    None => self.line("return ZVal::Nil;"),
-                },
+                }
                 Stmt::Scope { kind, block, .. } => {
                     self.line("{");
                     self.indent += 1;
@@ -169,6 +195,7 @@ impl<'a> Codegen<'a> {
         match expr {
             Expr::Int(v, _) => format!("ZVal::Int({v})"),
             Expr::Str(s, _) => format!("ZVal::Str({}.into())", escape_rust_string(s)),
+            Expr::Bool(b, _) => format!("ZVal::Bool({b})"),
             Expr::Ident(name, _) => format!("{name}.clone()"),
             Expr::Call {
                 callee,
@@ -208,6 +235,33 @@ impl<'a> Codegen<'a> {
                     format!("{callee}({})", args_code.join(", "))
                 }
             },
+            Expr::Binary { op, lhs, rhs, .. } => {
+                let l = self.gen_expr(lhs);
+                let r = self.gen_expr(rhs);
+                match op {
+                    BinOp::Add => format!("{l}.add(&{r})"),
+                    BinOp::Sub => format!("{l}.sub(&{r})"),
+                    BinOp::Mul => format!("{l}.mul(&{r})"),
+                    BinOp::Div => format!("{l}.div(&{r})"),
+                    BinOp::Rem => format!("{l}.rem(&{r})"),
+                    BinOp::Eq => format!("ZVal::Bool({l} == {r})"),
+                    BinOp::Ne => format!("ZVal::Bool({l} != {r})"),
+                    BinOp::Lt => format!("{l}.lt(&{r})"),
+                    BinOp::Le => format!("{l}.le(&{r})"),
+                    BinOp::Gt => format!("{l}.gt(&{r})"),
+                    BinOp::Ge => format!("{l}.ge(&{r})"),
+                    // && and || keep Rust's short-circuit semantics.
+                    BinOp::And => format!("ZVal::Bool({l}.to_bool() && {r}.to_bool())"),
+                    BinOp::Or => format!("ZVal::Bool({l}.to_bool() || {r}.to_bool())"),
+                }
+            }
+            Expr::Unary { op, operand, .. } => {
+                let o = self.gen_expr(operand);
+                match op {
+                    UnOp::Neg => format!("{o}.neg()"),
+                    UnOp::Not => format!("ZVal::Bool(!{o}.to_bool())"),
+                }
+            }
         }
     }
 
@@ -223,7 +277,7 @@ impl<'a> Codegen<'a> {
     fn assemble(&self) -> String {
         let mut out = String::new();
         out.push_str("#![allow(unused, dead_code)]\n");
-        out.push_str("// Generated by Zero compiler (zeroc v0.2.0)\n");
+        out.push_str("// Generated by Zero compiler (zeroc v0.3.0)\n");
         out.push_str(&format!("// Source: {}\n", self.src_name));
         out.push('\n');
         out.push_str(ZVAL_RUNTIME);
@@ -240,6 +294,28 @@ impl<'a> Codegen<'a> {
         }
         out.push_str(&self.body);
         out
+    }
+}
+
+impl<'a> Codegen<'a> {
+    /// The implicit `return nil` at the end of a function body, wrapped in a
+    /// runtime type check when the function declares a concrete return type.
+    fn checked_nil_return(&self) -> String {
+        match &self.current_ret {
+            Some(ty) => {
+                format!("return __zero_check_type(&ZVal::Nil, {});", ztype_code(ty))
+            }
+            _ => "return ZVal::Nil;".to_string(),
+        }
+    }
+}
+
+/// Rust source for a declared Zero type.
+fn ztype_code(ty: &ZType) -> &'static str {
+    match ty {
+        ZType::Int => "ZValType::Int",
+        ZType::Str => "ZValType::Str",
+        ZType::Bool => "ZValType::Bool",
     }
 }
 
@@ -327,6 +403,35 @@ mod tests {
         );
         assert_eq!(out.matches("let mut x: ZVal =").count(), 2);
         assert!(out.contains("let y = 3;"));
+    }
+
+    #[test]
+    fn operators_emit_zval_calls() {
+        let out = generate_for("fn main() { x = 1 + 2 * 3\ny = a == b\nz = a and b\nn = -x }");
+        assert!(
+            out.contains("let mut x: ZVal = ZVal::Int(1).add(&ZVal::Int(2).mul(&ZVal::Int(3)));")
+        );
+        assert!(out.contains("let mut y: ZVal = ZVal::Bool(a.clone() == b.clone());"));
+        assert!(out
+            .contains("let mut z: ZVal = ZVal::Bool(a.clone().to_bool() && b.clone().to_bool());"));
+        assert!(out.contains("let mut n: ZVal = x.clone().neg();"));
+    }
+
+    #[test]
+    fn func_types_emit_runtime_checks() {
+        let out = generate_for("func add(a<int>, b) -> int: a + b\nfn main() { add(1, 2) }");
+        assert!(out.contains("fn add(a: ZVal, b: ZVal) -> ZVal {"));
+        assert!(out.contains("__zero_check_type(&a, ZValType::Int);"));
+        // 单表达式体 -> 隐式 return，且带返回类型校验
+        assert!(
+            out.contains("return __zero_check_type(&a.clone().add(&b.clone()), ZValType::Int);")
+        );
+    }
+
+    #[test]
+    fn bool_literal_emits_zval() {
+        let out = generate_for("fn main() { x = true }");
+        assert!(out.contains("let mut x: ZVal = ZVal::Bool(true);"));
     }
 
     #[test]

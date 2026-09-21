@@ -1,5 +1,7 @@
 //! Callable metadata: builtin functions, `io` API names and arity.
 
+use crate::ast::ZType;
+
 pub const BUILTIN_CALL_RUST: &str = "call_rust";
 pub const BUILTIN_CALL_SYS: &str = "call_sys";
 
@@ -12,4 +14,6 @@ pub struct FnInfo {
     /// Fixed arity. `None` means the arity is unknown (raw `.rs` header) or
     /// variable (`io` functions are checked specially).
     pub arity: Option<usize>,
+    /// Declared parameter types (None entry = dynamic).
+    pub params: Vec<Option<ZType>>,
 }

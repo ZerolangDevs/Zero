@@ -1,6 +1,6 @@
 # Zero
 
-一个用 **Rust** 编写的编程语言底层框架（v0.2）。Zero 是一门"默认待在高级作用域、随时可以下潜到 Rust 底层"的动态类型语言：编译器把 Zero 源码翻译成 Rust 代码，再由 `rustc` 编译为可执行文件。
+一个用 **Rust** 编写的编程语言底层框架（v0.3）。Zero 是一门"默认待在高级作用域、随时可以下潜到 Rust 底层"的动态类型语言：编译器把 Zero 源码翻译成 Rust 代码，再由 `rustc` 编译为可执行文件。
 
 > A modren progamming language for people what need to progame easily and quickly
 
@@ -9,6 +9,8 @@
 - **编译器用 Rust 实现**：词法 → 语法 → 作用域 → 代码生成，全链路零第三方依赖。
 - **作用域机制**：默认在 `highlevel` 作用域；`scope highlevel { ... }` 嵌套作用域（变量遮蔽/可见性）；`scope lowlevel { ... }` 直接书写原始 Rust。
 - **动态变量，无类型机制**：`name = 值` 创建或赋值，`name` 读取。任意类型，无需类型标注；`name = 值<const>` 声明为不可变变量。
+- **运算符与表达式求值**：算术、比较、逻辑（`and`/`or` 短路）、一元 `-`/`!`、布尔字面量、括号与优先级。
+- **`func` 关键字 + 可选类型标注**：`func f(x<int>, y) -> string: code`；参数/返回类型（`int`/`string`/`bool`/`any`）编译期查字面量、运行时校验；冒号函数体支持单表达式（隐式返回）或 `{ ... }` 块。
 - **函数参数与返回值**：`fn f(a, b) { return a }`，参数/返回值都是动态值。
 - **标准库头文件（依赖链）**：`io` → `stream_io` → `stream`。
 - **生成 Rust 代码**：输出自包含 `.rs` 文件，内置动态值运行时（`ZVal`）。
@@ -80,6 +82,66 @@ fn main() {
 }
 ```
 
+### 运算符与表达式求值
+
+```zero
+import io
+
+fn main() {
+    a = 10
+    b = 3
+
+    print("a + b = {}\n", a + b)        // 算术：13
+    print("a / b = {}\n", a / b)        // 整除：3
+    print("a % b = {}\n", a % b)        // 取余：1
+    print("-a = {}\n", -a)              // 一元负号：-10
+
+    print("a >= b: {}\n", a >= b)       // 比较 → Bool：true
+    print("a and b: {}\n", a and b)   // 逻辑（非 0 即真）：true
+    print("!a: {}\n", !a)               // 逻辑非：false
+
+    greeting = "Hello, " + "Zero" + "!" // 字符串拼接
+    print("{}\n", greeting)
+
+    x = 1 + 2 * 3                        // 优先级：7
+    print("(1 + 2) * 3 = {}\n", (1 + 2) * 3)  // 括号：9
+}
+```
+
+- 算术只对整数有效（字符串仅 `+` 拼接）；非数字参与算术得 `nil`。
+- 比较返回 `Bool`；不同类型比较得 `false`（`==`/`!=` 按值比较）。
+- `and` / `or` 短路求值（右侧副作用不会被触发，当左侧已定值时）。
+- `true` / `false` 为布尔字面量。
+
+### func 关键字与类型标注
+
+```zero
+import io
+
+// 单表达式体：冒号后直接是表达式，自动返回
+func add(a<int>, b<int>) -> int: a + b
+
+// 块体：冒号后是 { ... }，支持多语句和显式 return
+func describe(name<string>, age<int>) -> string: {
+    print("{} is {} years old\n", name, age)
+    return name + " (" + age + ")"
+}
+
+fn main(): {          // main 也可以用 func 定义（fn 保留兼容）
+    x = add(3, 4)
+    print("add(3, 4) = {}\n", x)
+    msg = describe("Zero", 18)
+    print("describe returned: {}\n", msg)
+}
+```
+
+- 参数类型标注**可选**：`x<int>`、`y`（动态）。返回类型可选：`-> int`。
+- 类型：`int` / `string` / `bool`；显式写 `any`（如 `x<any>`、`-> any`）等同不标注（动态），不会生成运行时校验。
+- **编译期**：字面量参数/返回值与标注类型不匹配 → 报错；变量参数在**运行时**校验（不匹配打印 `type error` 并退出）。
+- 类型：`int` / `string` / `bool` / `any`（any 即不校验）。
+- `return expr` / `return;`：显式返回值（块体里使用）；`-> type` 标注时返回值同样做类型校验。
+- `fn` 旧语法（无冒号、块体）完全保留，参数类型标注对 `fn` 同样可用。
+
 ### 作用域机制
 
 ```zero
@@ -144,20 +206,31 @@ echo Ali 21 | ./io_demo
 
 > Windows 说明：本仓库的 `.cargo/config.toml` 把链接器设为 Rust 自带 `rust-lld`，以便在没有 MSVC `link.exe` 的环境也能构建；在有 MSVC 的机器上同样可用，也可自行删除该配置。
 
-## 语言规范（v0.2）
+## 语言规范（v0.3）
 
 ```text
 program    := item*
 item       := import | function
 import     := "import" (IDENT ("." IDENT | INT)* | STRING) [";"]
-function   := "fn" IDENT "(" [IDENT ("," IDENT)*] ")" block
+function   := ("fn" | "func") IDENT "(" [param ("," param)*] ")" ["->" type] func_body
+param      := IDENT ["<" type ">"]
+type       := "int" | "string" | "bool" | "any"
+func_body  := block                              // fn 或 func 的块体
+            | ":" block                          // func：冒号 + 块
+            | ":" expr                           // func：冒号 + 单表达式（隐式返回）
 block      := "{" stmt* "}"
 stmt       := assign | return | scope | expr [终止符]
 assign     := IDENT "=" expr
 return     := "return" [expr]
 scope      := "scope" ("highlevel" | "lowlevel") block
-expr       := INT | STRING | IDENT | IDENT "(" [expr ("," expr)*] ")"
+expr       := unary (binop unary)*
+unary      := ("-" | "!") unary | primary
+primary    := INT | STRING | "true" | "false" | IDENT | IDENT "(" [expr ("," expr)*] ")" | "(" expr ")"
+binop      := "+" | "-" | "*" | "/" | "%"
+            | "==" | "!=" | "<" | ">" | "<=" | ">=" | "and" | "or"
 ```
+
+运算符优先级（低 → 高）：`or` < `and` < `==` `!=` < `<` `>` `<=` `>=` < `+` `-` < `*` `/` `%` < 一元 `-` `!` < 主表达式；全部左结合，`and`/`or` 短路求值。
 
 - 语句终止符：`;`、换行、或块结束前的 `}`（三者皆可）。
 - 注释：`// ...` 与 `/* ... */`。
@@ -187,6 +260,8 @@ examples/
   scope_demo.zero         作用域机制
   func_demo.zero          动态变量 + 函数参数/返回值
   const_demo.zero         不可变变量 <const>
+  ops_demo.zero           运算符与表达式求值
+  func_typed.zero        func 关键字 + 类型标注
   io_demo.zero            io 头文件交互演示
   io_file.zero            set_stream 文件流
   headers_demo/           .zh / .rs 头文件导入
@@ -197,9 +272,10 @@ examples/
 
 遵循 KISS / DRY / YAGNI：只实现当前明确需要的特性；标准库按 `io → stream_io → stream` 单向依赖分层；每个模块单一职责。
 
-## 已知限制（v0.2）
+## 已知限制（v0.3）
 
-- 表达式暂不支持二元运算（`1 + 1` 请放进 `call_rust`；`+` 会作为格式化内容处理）。
+- 算术仅支持整数与字符串 `+` 拼接；其他类型参与算术得 `nil`（不报错）。
+- 运行时类型校验失败会打印 `type error` 并退出（显式标注是硬约束）。
 - `<const>` 仅对当前作用域内的首次声明有效；不能把已存在的可变变量重新声明为 const。
 - `call_rust` 内联代码中引用 Zero 变量时，变量是 `ZVal` 动态值（可用 `.to_rust_string()` 取字符串）。
 - 用户函数返回动态值；函数体末尾未显式 `return` 时自动返回 `nil`。
@@ -208,4 +284,4 @@ examples/
 
 ## 路线图（未实现，勿提前实现）
 
-运算符与表达式求值、类型断言与转换函数、多文件模块系统、`std` 数学/字符串标准库、增量编译。
+类型断言与转换函数、多文件模块系统、`std` 数学/字符串标准库、控制流（`if`/`while`）、增量编译。

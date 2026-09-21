@@ -11,12 +11,17 @@ pub enum TokKind {
 
     // Keywords
     Fn,
+    Func,
     Return,
     Import,
     Scope,
     HighLevel,
     LowLevel,
     Const,
+    True,
+    False,
+    And,
+    Or,
 
     // Symbols
     LBrace,
@@ -25,10 +30,24 @@ pub enum TokKind {
     RParen,
     Semi,
     Comma,
+    Colon,
     Dot,
     Lt,
     Gt,
     Equal,
+
+    // Operators
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    Bang,
+    Arrow,
+    EqEq,
+    BangEq,
+    Le,
+    Ge,
 
     Eof,
 }

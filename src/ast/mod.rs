@@ -3,7 +3,7 @@
 mod expr;
 mod stmt;
 
-pub use expr::Expr;
+pub use expr::{BinOp, Expr, UnOp};
 pub use stmt::Stmt;
 
 use crate::diag::Span;
@@ -35,11 +35,49 @@ pub struct Import {
     pub span: Span,
 }
 
+/// A declared type for parameters and return values. `None` in a function
+/// signature means dynamic (the default; the explicit type `any` is
+/// normalised to `None` by the parser).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZType {
+    Int,
+    Str,
+    Bool,
+}
+
+impl ZType {
+    pub fn from_name(s: &str) -> Option<ZType> {
+        match s {
+            "int" => Some(ZType::Int),
+            "string" => Some(ZType::Str),
+            "bool" => Some(ZType::Bool),
+            _ => None,
+        }
+    }
+
+    /// Diagnostic name.
+    pub fn name(&self) -> &'static str {
+        match self {
+            ZType::Int => "int",
+            ZType::Str => "string",
+            ZType::Bool => "bool",
+        }
+    }
+}
+
+/// A function parameter with an optional type annotation: `x<int>`.
+#[derive(Debug, Clone)]
+pub struct Param {
+    pub name: String,
+    pub ty: Option<ZType>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Function {
     pub name: String,
-    /// Un-typed parameters: any parameter is a dynamic `ZVal`.
-    pub params: Vec<String>,
+    pub params: Vec<Param>,
+    /// Declared return type (None = dynamic).
+    pub ret: Option<ZType>,
     pub body: Block,
     pub span: Span,
 }

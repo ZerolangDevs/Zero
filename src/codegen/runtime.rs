@@ -32,6 +32,98 @@ impl ZVal {
         }
         ZVal::Str(s.to_string())
     }
+
+    /// Truthiness for `&&`, `||`, `!` and conditions.
+    pub fn to_bool(&self) -> bool {
+        match self {
+            ZVal::Int(n) => *n != 0,
+            ZVal::Str(s) => !s.is_empty(),
+            ZVal::Bool(b) => *b,
+            ZVal::Nil => false,
+        }
+    }
+
+    fn as_int(&self) -> Option<i64> {
+        match self {
+            ZVal::Int(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    /// `+`: numeric addition, or string concatenation for strings.
+    pub fn add(&self, rhs: &ZVal) -> ZVal {
+        match (self, rhs) {
+            (ZVal::Int(a), ZVal::Int(b)) => ZVal::Int(a + b),
+            (ZVal::Str(a), ZVal::Str(b)) => ZVal::Str(format!("{a}{b}")),
+            (ZVal::Str(a), other) => ZVal::Str(format!("{a}{}", other.to_rust_string())),
+            (other, ZVal::Str(b)) => ZVal::Str(format!("{}{b}", other.to_rust_string())),
+            _ => ZVal::Nil,
+        }
+    }
+
+    /// `-`, `*`, `/`, `%`: numeric only; non-numeric operands yield Nil.
+    pub fn sub(&self, rhs: &ZVal) -> ZVal {
+        match (self.as_int(), rhs.as_int()) {
+            (Some(a), Some(b)) => ZVal::Int(a - b),
+            _ => ZVal::Nil,
+        }
+    }
+
+    pub fn mul(&self, rhs: &ZVal) -> ZVal {
+        match (self.as_int(), rhs.as_int()) {
+            (Some(a), Some(b)) => ZVal::Int(a * b),
+            _ => ZVal::Nil,
+        }
+    }
+
+    pub fn div(&self, rhs: &ZVal) -> ZVal {
+        match (self.as_int(), rhs.as_int()) {
+            (Some(_), Some(0)) => ZVal::Nil,
+            (Some(a), Some(b)) => ZVal::Int(a / b),
+            _ => ZVal::Nil,
+        }
+    }
+
+    pub fn rem(&self, rhs: &ZVal) -> ZVal {
+        match (self.as_int(), rhs.as_int()) {
+            (Some(_), Some(0)) => ZVal::Nil,
+            (Some(a), Some(b)) => ZVal::Int(a % b),
+            _ => ZVal::Nil,
+        }
+    }
+
+    /// Unary `-`.
+    pub fn neg(&self) -> ZVal {
+        match self.as_int() {
+            Some(n) => ZVal::Int(-n),
+            None => ZVal::Nil,
+        }
+    }
+
+    fn cmp_val(&self, rhs: &ZVal) -> Option<std::cmp::Ordering> {
+        match (self, rhs) {
+            (ZVal::Int(a), ZVal::Int(b)) => Some(a.cmp(b)),
+            (ZVal::Str(a), ZVal::Str(b)) => Some(a.cmp(b)),
+            _ => None,
+        }
+    }
+
+    /// Ordered comparisons return `ZVal::Bool(false)` for mixed/invalid types.
+    pub fn lt(&self, rhs: &ZVal) -> ZVal {
+        ZVal::Bool(self.cmp_val(rhs) == Some(std::cmp::Ordering::Less))
+    }
+
+    pub fn le(&self, rhs: &ZVal) -> ZVal {
+        ZVal::Bool(self.cmp_val(rhs).map_or(false, |o| o != std::cmp::Ordering::Greater))
+    }
+
+    pub fn gt(&self, rhs: &ZVal) -> ZVal {
+        ZVal::Bool(self.cmp_val(rhs) == Some(std::cmp::Ordering::Greater))
+    }
+
+    pub fn ge(&self, rhs: &ZVal) -> ZVal {
+        ZVal::Bool(self.cmp_val(rhs).map_or(false, |o| o != std::cmp::Ordering::Less))
+    }
 }
 
 impl std::fmt::Display for ZVal {
@@ -61,6 +153,30 @@ pub fn __zero_format(fmt: &str, args: &[ZVal]) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// Declared Zero types, used by runtime type checks.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ZValType {
+    Int,
+    Str,
+    Bool,
+}
+
+/// Verify a value against a declared type; on mismatch print an error and
+/// exit. Returns the value unchanged when it matches.
+pub fn __zero_check_type(v: &ZVal, ty: ZValType) -> ZVal {
+    let ok = match ty {
+        ZValType::Int => matches!(v, ZVal::Int(_)),
+        ZValType::Str => matches!(v, ZVal::Str(_)),
+        ZValType::Bool => matches!(v, ZVal::Bool(_)),
+    };
+    if ok {
+        v.clone()
+    } else {
+        eprintln!("type error: expected {ty:?}, got {:?}", v);
+        std::process::exit(1);
+    }
 }
 "#;
 

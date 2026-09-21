@@ -44,10 +44,17 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Ensure at least `upto + 1` tokens are buffered.
+    /// Ensure at least `upto + 1` tokens are buffered. Lexer-level errors
+    /// don't know the file name, so it is filled in here.
     fn fill(&mut self, upto: usize) -> Result<(), CompileError> {
         while self.lookahead.len() <= upto {
-            self.lookahead.push(self.lexer.next_token()?);
+            let tok = self.lexer.next_token().map_err(|mut e| {
+                if e.file == "<source>" {
+                    e.file = self.file.clone();
+                }
+                e
+            })?;
+            self.lookahead.push(tok);
         }
         Ok(())
     }
@@ -134,11 +141,11 @@ impl<'a> Parser<'a> {
             let tok = self.peek()?.clone();
             match tok.kind {
                 TokKind::Import => items.push(Item::Import(self.parse_import()?)),
-                TokKind::Fn => items.push(Item::Function(self.parse_function()?)),
+                TokKind::Fn | TokKind::Func => items.push(Item::Function(self.parse_function()?)),
                 _ => {
                     return Err(CompileError::at(
                         format!(
-                            "expected 'import' or 'fn' at top level, found {:?}",
+                            "expected 'import', 'fn' or 'func' at top level, found {:?}",
                             tok.kind
                         ),
                         self.file.clone(),
@@ -202,14 +209,16 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_function(&mut self) -> Result<Function, CompileError> {
-        let kw = self.expect(&TokKind::Fn)?;
+        let kw = self.next()?;
+        let is_func = kw.kind == TokKind::Func;
         let (name, name_span) = self.expect_ident("function name")?;
         self.expect(&TokKind::LParen)?;
         let mut params = Vec::new();
         if !self.at(&TokKind::RParen)? {
             loop {
-                let (param, _) = self.expect_ident("parameter name")?;
-                params.push(param);
+                let (pname, _) = self.expect_ident("parameter name")?;
+                let ty = self.parse_opt_type()?;
+                params.push(Param { name: pname, ty });
                 if self.at(&TokKind::Comma)? {
                     self.next()?;
                 } else {
@@ -218,13 +227,71 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(&TokKind::RParen)?;
-        let block = self.parse_block()?;
+        let ret = self.parse_opt_return_type()?;
+        let body = if is_func {
+            // `func name(...): code` - colon body, either a block or a
+            // single expression that is implicitly returned.
+            self.expect(&TokKind::Colon)?;
+            if self.at(&TokKind::LBrace)? {
+                self.parse_block()?
+            } else {
+                let expr = self.parse_expr()?;
+                Block::Stmts(vec![Stmt::Return { value: Some(expr) }])
+            }
+        } else {
+            self.parse_block()?
+        };
         Ok(Function {
             name,
             params,
-            body: block,
+            ret,
+            body,
             span: Span::new(kw.span.start, name_span.end),
         })
+    }
+
+    /// Optional parameter type: `x<int>` -> `Some(ZType::Int)`. The
+    /// explicit `any` type is dynamic and normalised to `None`.
+    fn parse_opt_type(&mut self) -> Result<Option<ZType>, CompileError> {
+        if self.at(&TokKind::Lt)? {
+            self.next()?;
+            let ty = self.parse_type_name()?;
+            self.expect(&TokKind::Gt)?;
+            Ok(ty)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Optional return type: `-> int` (or `-> any`, same as omitted).
+    fn parse_opt_return_type(&mut self) -> Result<Option<ZType>, CompileError> {
+        if self.at(&TokKind::Arrow)? {
+            self.next()?;
+            self.parse_type_name()
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn parse_type_name(&mut self) -> Result<Option<ZType>, CompileError> {
+        let tok = self.next()?;
+        match tok.kind {
+            TokKind::Ident(name) => match name.as_str() {
+                "any" => Ok(None),
+                _ => ZType::from_name(&name).map(Some).ok_or_else(|| {
+                    CompileError::at(
+                        format!("unknown type '{name}' (expected int, string, bool or any)"),
+                        self.file.clone(),
+                        tok.span,
+                    )
+                }),
+            },
+            other => Err(CompileError::at(
+                format!("expected type name, found {other:?}"),
+                self.file.clone(),
+                tok.span,
+            )),
+        }
     }
 
     fn parse_block(&mut self) -> Result<Block, CompileError> {
@@ -330,10 +397,86 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr(&mut self) -> Result<Expr, CompileError> {
+        self.parse_binary(0)
+    }
+
+    /// Pratt parser: left-associative binary operators with precedence.
+    fn parse_binary(&mut self, min_prec: u8) -> Result<Expr, CompileError> {
+        let mut lhs = self.parse_unary()?;
+        while let Some((op, prec)) = self.peek_binop()? {
+            if prec < min_prec {
+                break;
+            }
+            self.next()?;
+            let rhs = self.parse_binary(prec + 1)?;
+            let span = Span::new(lhs.span().start, rhs.span().end);
+            lhs = Expr::Binary {
+                op,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+                span,
+            };
+        }
+        Ok(lhs)
+    }
+
+    /// Look at the next operator and its precedence, if any. `<const>` is
+    /// a variable marker, not a comparison, so `<` right before the
+    /// keyword `const` is not treated as an operator.
+    fn peek_binop(&mut self) -> Result<Option<(BinOp, u8)>, CompileError> {
+        let kind = self.peek()?.kind.clone();
+        let (op, prec) = match &kind {
+            TokKind::Plus => (BinOp::Add, 5),
+            TokKind::Minus => (BinOp::Sub, 5),
+            TokKind::Star => (BinOp::Mul, 6),
+            TokKind::Slash => (BinOp::Div, 6),
+            TokKind::Percent => (BinOp::Rem, 6),
+            TokKind::EqEq => (BinOp::Eq, 3),
+            TokKind::BangEq => (BinOp::Ne, 3),
+            TokKind::Lt => {
+                if matches!(&self.peek2()?.kind, TokKind::Const) {
+                    return Ok(None);
+                }
+                (BinOp::Lt, 4)
+            }
+            TokKind::Gt => (BinOp::Gt, 4),
+            TokKind::Le => (BinOp::Le, 4),
+            TokKind::Ge => (BinOp::Ge, 4),
+            TokKind::And => (BinOp::And, 2),
+            TokKind::Or => (BinOp::Or, 1),
+            _ => return Ok(None),
+        };
+        Ok(Some((op, prec)))
+    }
+
+    fn parse_unary(&mut self) -> Result<Expr, CompileError> {
+        let tok = self.peek()?.clone();
+        let (op, operand) = match tok.kind {
+            TokKind::Minus => {
+                self.next()?;
+                (UnOp::Neg, self.parse_unary()?)
+            }
+            TokKind::Bang => {
+                self.next()?;
+                (UnOp::Not, self.parse_unary()?)
+            }
+            _ => return self.parse_primary(),
+        };
+        let end = operand.span().end;
+        Ok(Expr::Unary {
+            op,
+            operand: Box::new(operand),
+            span: Span::new(tok.span.start, end),
+        })
+    }
+
+    fn parse_primary(&mut self) -> Result<Expr, CompileError> {
         let tok = self.next()?;
         let expr = match tok.kind {
             TokKind::Int(v) => Expr::Int(v, tok.span),
             TokKind::Str(s) => Expr::Str(s, tok.span),
+            TokKind::True => Expr::Bool(true, tok.span),
+            TokKind::False => Expr::Bool(false, tok.span),
             TokKind::Ident(name) => {
                 if self.at(&TokKind::LParen)? {
                     self.next()?;
@@ -357,6 +500,11 @@ impl<'a> Parser<'a> {
                 } else {
                     Expr::Ident(name, tok.span)
                 }
+            }
+            TokKind::LParen => {
+                let inner = self.parse_expr()?;
+                self.expect(&TokKind::RParen)?;
+                inner
             }
             other => {
                 return Err(CompileError::at(
@@ -391,7 +539,48 @@ mod tests {
         let Item::Function(f) = &prog.items[0] else {
             panic!("expected function");
         };
-        assert_eq!(f.params, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(f.params.len(), 2);
+        assert_eq!(f.params[0].name, "a");
+        assert_eq!(f.params[1].name, "b");
+        assert!(f.params.iter().all(|p| p.ty.is_none()));
+    }
+
+    #[test]
+    fn parses_func_with_types() {
+        let prog = parse(
+            "func add(a<int>, b) -> int: a + b\nfunc main(): { }",
+            "test.zero",
+        )
+        .unwrap();
+        let Item::Function(f) = &prog.items[0] else {
+            panic!("expected function");
+        };
+        assert_eq!(f.params[0].name, "a");
+        assert_eq!(f.params[0].ty, Some(ZType::Int));
+        assert_eq!(f.params[1].ty, None);
+        assert_eq!(f.ret, Some(ZType::Int));
+        // 单表达式体被包装成隐式 return
+        let Block::Stmts(stmts) = &f.body else {
+            panic!("expected stmts");
+        };
+        assert!(matches!(&stmts[0], Stmt::Return { value: Some(..) }));
+    }
+
+    #[test]
+    fn any_type_normalised_to_dynamic() {
+        let prog = parse("func f(a<any>, b) -> any: a", "test.zero").unwrap();
+        let Item::Function(f) = &prog.items[0] else {
+            panic!("expected function");
+        };
+        assert!(f.params[0].ty.is_none());
+        assert!(f.params[1].ty.is_none());
+        assert!(f.ret.is_none());
+    }
+
+    #[test]
+    fn rejects_unknown_type() {
+        let err = parse("func f(x<floats>): { }", "test.zero").unwrap_err();
+        assert!(err.message.contains("unknown type 'floats'"));
     }
 
     #[test]
@@ -447,8 +636,120 @@ mod tests {
     }
 
     #[test]
+    fn parses_operator_precedence() {
+        let prog = parse("fn main() { x = 1 + 2 * 3 }", "test.zero").unwrap();
+        let Item::Function(f) = &prog.items[0] else {
+            panic!("expected function");
+        };
+        let Block::Stmts(stmts) = &f.body else {
+            panic!("expected stmts");
+        };
+        let Stmt::Assign { value, .. } = &stmts[0] else {
+            panic!("expected assign");
+        };
+        let Expr::Binary { op, lhs, rhs, .. } = value else {
+            panic!("expected binary");
+        };
+        assert_eq!(*op, BinOp::Add);
+        assert!(matches!(&**lhs, Expr::Int(1, _)));
+        assert!(matches!(
+            &**rhs,
+            Expr::Binary { op: mop, .. } if *mop == BinOp::Mul
+        ));
+    }
+
+    #[test]
+    fn parses_parens_and_unary() {
+        let prog = parse("fn main() { x = (1 + 2) * -3\ny = !flag }", "test.zero").unwrap();
+        let Item::Function(f) = &prog.items[0] else {
+            panic!("expected function");
+        };
+        let Block::Stmts(stmts) = &f.body else {
+            panic!("expected stmts");
+        };
+        let Stmt::Assign { value, .. } = &stmts[0] else {
+            panic!("expected assign");
+        };
+        let Expr::Binary { op, lhs, .. } = value else {
+            panic!("expected binary");
+        };
+        assert_eq!(*op, BinOp::Mul);
+        let Expr::Binary { op: aop, .. } = &**lhs else {
+            panic!("expected inner add");
+        };
+        assert_eq!(*aop, BinOp::Add);
+        let Stmt::Assign { value: v2, .. } = &stmts[1] else {
+            panic!("expected assign 2");
+        };
+        let Expr::Unary { op: uop, .. } = v2 else {
+            panic!("expected unary");
+        };
+        assert_eq!(*uop, UnOp::Not);
+    }
+
+    #[test]
+    fn const_marker_not_a_comparison() {
+        let prog = parse("fn main() { x = 1<const> }", "test.zero").unwrap();
+        let Item::Function(f) = &prog.items[0] else {
+            panic!("expected function");
+        };
+        let Block::Stmts(stmts) = &f.body else {
+            panic!("expected stmts");
+        };
+        let Stmt::Assign {
+            value, is_const, ..
+        } = &stmts[0]
+        else {
+            panic!("expected assign");
+        };
+        assert!(*is_const);
+        assert!(matches!(value, Expr::Int(1, _)));
+    }
+
+    #[test]
+    fn comparison_inside_expression() {
+        let prog = parse("fn main() { x = a < b }", "test.zero").unwrap();
+        let Item::Function(f) = &prog.items[0] else {
+            panic!("expected function");
+        };
+        let Block::Stmts(stmts) = &f.body else {
+            panic!("expected stmts");
+        };
+        let Stmt::Assign {
+            value, is_const, ..
+        } = &stmts[0]
+        else {
+            panic!("expected assign");
+        };
+        assert!(!is_const);
+        let Expr::Binary { op, .. } = value else {
+            panic!("expected comparison");
+        };
+        assert_eq!(*op, BinOp::Lt);
+    }
+
+    #[test]
+    fn parses_bool_literals() {
+        let prog = parse("fn main() { t = true\nf = false }", "test.zero").unwrap();
+        let Item::Function(f) = &prog.items[0] else {
+            panic!("expected function");
+        };
+        let Block::Stmts(stmts) = &f.body else {
+            panic!("expected stmts");
+        };
+        let Stmt::Assign { value, .. } = &stmts[0] else {
+            panic!("expected assign");
+        };
+        assert!(matches!(value, Expr::Bool(true, _)));
+        let Stmt::Assign { value: v2, .. } = &stmts[1] else {
+            panic!("expected assign 2");
+        };
+        assert!(matches!(v2, Expr::Bool(false, _)));
+    }
+
+    #[test]
     fn rejects_stray_top_level_statement() {
         let err = parse("call_sys(\"x\")", "test.zero").unwrap_err();
-        assert!(err.message.contains("expected 'import' or 'fn'"));
+        assert!(err.message.contains("expected 'import', 'fn' or 'func'"));
     }
 }
