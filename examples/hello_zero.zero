@@ -1,0 +1,13 @@
+// hello_zero.zero - Hello, Zero! (camelCase 规范示范)
+import io
+
+func greetUser(name<string>): {
+    print("Hello, {}!\n", name)
+}
+
+func main(): {
+    version = "0.3"
+    greetUser("Zero")
+    print("Zero v{}\n", version)
+    print("1 + 2 * 3 = {}\n", 1 + 2 * 3)
+}
