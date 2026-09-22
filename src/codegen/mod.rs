@@ -63,17 +63,18 @@ pub fn generate(prog: &Program, loader: &Loader, src_name: &str) -> String {
             .push(format!("// ---- import: {display} ----\n{content}"));
     }
 
-    // 3. functions from Zero headers (the entry point stays in the main file)
+    // 3. functions from Zero headers
     for (display, hprog) in &loader.zero_headers {
         cg.line(&format!("// ---- import: {display} ----"));
         for f in hprog.functions() {
-            if f.name != "main" {
-                cg.gen_function(f);
-            }
+            cg.gen_function(f);
         }
     }
 
-    // 4. functions from the main program
+    // 4. top-level statements form the implicit `fn main` entry point
+    cg.gen_top_level(prog);
+
+    // 5. functions from the main program
     for f in prog.functions() {
         cg.gen_function(f);
     }
@@ -82,6 +83,30 @@ pub fn generate(prog: &Program, loader: &Loader, src_name: &str) -> String {
 }
 
 impl<'a> Codegen<'a> {
+    /// Top-level statements become `fn main() -> ZVal { ... }`.
+    fn gen_top_level(&mut self, prog: &Program) {
+        let tops: Vec<Stmt> = prog
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Top(stmt) => Some(stmt.clone()),
+                _ => None,
+            })
+            .collect();
+        if tops.is_empty() {
+            return;
+        }
+        self.line("fn main() -> ZVal {");
+        self.indent += 1;
+        self.blocks.push(HashMap::new());
+        self.gen_stmts(&tops);
+        if !ends_with_return(&tops) {
+            self.line("return ZVal::Nil;");
+        }
+        self.blocks.pop();
+        self.indent -= 1;
+        self.line("}");
+    }
     fn line(&mut self, text: &str) {
         for _ in 0..self.indent {
             self.body.push_str(INDENT);
@@ -133,13 +158,17 @@ impl<'a> Codegen<'a> {
                     ..
                 } => {
                     let expr = self.gen_expr(value);
-                    let current = self.blocks.last_mut().expect("block stack");
-                    if current.contains_key(name) {
-                        // Mutable reassignment; the analyzer blocks const.
+                    // Update the nearest existing binding (across blocks), or
+                    // declare a new variable in the current block.
+                    let declared = self.blocks.iter().rev().any(|b| b.contains_key(name));
+                    if declared {
                         self.line(&format!("{name} = {expr};"));
                     } else {
                         let kw = if *is_const { "let" } else { "let mut" };
-                        current.insert(name.clone(), *is_const);
+                        self.blocks
+                            .last_mut()
+                            .expect("block stack")
+                            .insert(name.clone(), *is_const);
                         self.line(&format!("{kw} {name}: ZVal = {expr};"));
                     }
                 }
@@ -187,8 +216,207 @@ impl<'a> Codegen<'a> {
                     self.indent -= 1;
                     self.line("}");
                 }
+                Stmt::If {
+                    cond,
+                    then,
+                    else_ifs,
+                    else_branch,
+                } => {
+                    let c = self.gen_expr(cond);
+                    self.line(&format!("if {c}.to_bool() {{"));
+                    self.indent += 1;
+                    self.gen_block_body(then, None);
+                    self.indent -= 1;
+                    for (econd, ebody) in else_ifs {
+                        let ec = self.gen_expr(econd);
+                        self.line(&format!("}} else if {ec}.to_bool() {{"));
+                        self.indent += 1;
+                        self.gen_block_body(ebody, None);
+                        self.indent -= 1;
+                    }
+                    if let Some(ebody) = else_branch {
+                        self.line("} else {");
+                        self.indent += 1;
+                        self.gen_block_body(ebody, None);
+                        self.indent -= 1;
+                    }
+                    self.line("}");
+                }
+                Stmt::While { cond, body } => {
+                    let c = self.gen_expr(cond);
+                    self.line(&format!("while {c}.to_bool() {{"));
+                    self.indent += 1;
+                    self.gen_block_body(body, None);
+                    self.indent -= 1;
+                    self.line("}");
+                }
+                Stmt::For {
+                    var,
+                    start,
+                    end,
+                    inclusive,
+                    body,
+                } => {
+                    let s = self.gen_expr(start);
+                    let e = self.gen_expr(end);
+                    let adj = if *inclusive { " + 1" } else { "" };
+                    self.line(&format!(
+                        "let __zero_loop_start = {s}.as_int().unwrap_or(0);"
+                    ));
+                    self.line(&format!(
+                        "let __zero_loop_end = {e}.as_int().unwrap_or(0){adj};"
+                    ));
+                    self.line("for __zero_i in __zero_loop_start..__zero_loop_end {");
+                    self.indent += 1;
+                    self.gen_block_body(body, Some((var.as_str(), "ZVal::Int(__zero_i)")));
+                    self.indent -= 1;
+                    self.line("}");
+                }
+                Stmt::Each { var, iter, body } => {
+                    let it = self.gen_expr(iter);
+                    self.line(&format!("let __zero_each = {it};"));
+                    self.line("match &__zero_each {");
+                    self.indent += 1;
+                    self.line("ZVal::Int(__zero_n) => {");
+                    self.indent += 1;
+                    self.line("for __zero_i in 0..*__zero_n {");
+                    self.indent += 1;
+                    self.gen_block_body(body, Some((var.as_str(), "ZVal::Int(__zero_i)")));
+                    self.indent -= 1;
+                    self.line("}");
+                    self.indent -= 1;
+                    self.line("}");
+                    self.line("ZVal::Str(__zero_s) => {");
+                    self.indent += 1;
+                    self.line("for __zero_c in __zero_s.chars() {");
+                    self.indent += 1;
+                    self.gen_block_body(
+                        body,
+                        Some((var.as_str(), "ZVal::Str(__zero_c.to_string())")),
+                    );
+                    self.indent -= 1;
+                    self.line("}");
+                    self.indent -= 1;
+                    self.line("}");
+                    self.line("_ => {}");
+                    self.indent -= 1;
+                    self.line("}");
+                }
+                Stmt::Switch {
+                    value,
+                    arms,
+                    default,
+                } => {
+                    let v = self.gen_expr(value);
+                    self.line(&format!("let __zero_sw = {v};"));
+                    for (i, (av, abody)) in arms.iter().enumerate() {
+                        let a = self.gen_expr(av);
+                        let head = if i == 0 {
+                            format!("if __zero_sw == {a} {{")
+                        } else {
+                            format!("}} else if __zero_sw == {a} {{")
+                        };
+                        self.line(&head);
+                        self.indent += 1;
+                        self.gen_block_body(abody, None);
+                        self.indent -= 1;
+                    }
+                    if let Some(dbody) = default {
+                        let head = if arms.is_empty() {
+                            "else {".to_string()
+                        } else {
+                            "} else {".to_string()
+                        };
+                        self.line(&head);
+                        self.indent += 1;
+                        self.gen_block_body(dbody, None);
+                        self.indent -= 1;
+                    }
+                    if !arms.is_empty() || default.is_some() {
+                        self.line("}");
+                    }
+                }
+                Stmt::Try {
+                    body,
+                    catch_var,
+                    catch_body,
+                } => {
+                    self.line("let __zero_try = std::panic::catch_unwind(|| -> ZVal {");
+                    self.indent += 1;
+                    // Inside the closure a `return` ends the try block, not
+                    // the function, so no function return-type checks apply.
+                    let saved_ret = self.current_ret;
+                    self.current_ret = None;
+                    self.blocks.push(HashMap::new());
+                    match body {
+                        Block::Stmts(stmts) => {
+                            self.gen_stmts(stmts);
+                            if !ends_with_return(stmts) {
+                                self.line("return ZVal::Nil;");
+                            }
+                        }
+                        Block::Raw(text) => {
+                            for raw_line in text.lines() {
+                                let trimmed = raw_line.trim_end();
+                                if trimmed.is_empty() {
+                                    self.body.push('\n');
+                                } else {
+                                    self.line(trimmed);
+                                }
+                            }
+                        }
+                    }
+                    self.blocks.pop();
+                    self.current_ret = saved_ret;
+                    self.indent -= 1;
+                    self.line("});");
+                    if let Some(cbody) = catch_body {
+                        self.line("if let Err(__zero_payload) = __zero_try {");
+                        self.indent += 1;
+                        self.line("let __zero_msg = __zero_payload");
+                        self.indent += 1;
+                        self.line(".downcast_ref::<&str>().map(|s| s.to_string())");
+                        self.line(".or_else(|| __zero_payload.downcast_ref::<String>().cloned())");
+                        self.line(".unwrap_or_else(|| \"panic\".to_string());");
+                        self.indent -= 1;
+                        let cextra = catch_var
+                            .as_deref()
+                            .map(|v| (v, "ZVal::Str(__zero_msg.clone())"));
+                        self.gen_block_body(cbody, cextra);
+                        self.indent -= 1;
+                        self.line("}");
+                    }
+                }
             }
         }
+    }
+
+    /// Emit a block body inside a fresh Rust block. `extra` is a
+    /// `(name, init_expr)` pair for a variable pre-declared in that block
+    /// (loop / catch variables).
+    fn gen_block_body(&mut self, block: &Block, extra: Option<(&str, &str)>) {
+        self.blocks.push(HashMap::new());
+        if let Some((v, init)) = extra {
+            self.blocks
+                .last_mut()
+                .expect("block stack")
+                .insert(v.to_string(), false);
+            self.line(&format!("let {v}: ZVal = {init};"));
+        }
+        match block {
+            Block::Stmts(stmts) => self.gen_stmts(stmts),
+            Block::Raw(text) => {
+                for raw_line in text.lines() {
+                    let trimmed = raw_line.trim_end();
+                    if trimmed.is_empty() {
+                        self.body.push('\n');
+                    } else {
+                        self.line(trimmed);
+                    }
+                }
+            }
+        }
+        self.blocks.pop();
     }
 
     fn gen_expr(&mut self, expr: &Expr) -> String {
@@ -401,8 +629,27 @@ mod tests {
         let out = generate_for(
             "fn main() { x = 1\nscope highlevel { x = 2 }\nscope lowlevel { let y = 3; } }",
         );
-        assert_eq!(out.matches("let mut x: ZVal =").count(), 2);
+        // 内层赋值更新外层绑定，不重复 let
+        assert_eq!(out.matches("let mut x: ZVal =").count(), 1);
+        assert!(out.contains("x = ZVal::Int(2);"));
         assert!(out.contains("let y = 3;"));
+    }
+
+    #[test]
+    fn loop_accumulation_updates_outer() {
+        let out = generate_for(
+            "import control\nfn main() { sum = 0\nfor i in 0..5:\n    sum = sum + i }",
+        );
+        assert!(out.contains("let mut sum: ZVal = ZVal::Int(0);"));
+        assert!(out.contains("sum = sum.clone().add(&i.clone());"));
+    }
+
+    #[test]
+    fn top_level_statements_become_main() {
+        let out = generate_for("x = 1\nprint(\"hi\")\nfn helper() { return 1 }");
+        assert!(out.contains("fn main() -> ZVal {"));
+        assert!(out.contains("let mut x: ZVal = ZVal::Int(1);"));
+        assert!(out.contains("fn helper() -> ZVal {"));
     }
 
     #[test]

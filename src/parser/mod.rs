@@ -26,6 +26,9 @@ pub struct Parser<'a> {
     lookahead: Vec<Token>,
     /// End offset of the most recently consumed token.
     last_end: usize,
+    /// True once `import control` has been seen: control flow keywords
+    /// (`if`, `while`, `for`, `each`, `switch`, `try`) become available.
+    control_enabled: bool,
 }
 
 /// Parse a source file into a program.
@@ -41,6 +44,7 @@ impl<'a> Parser<'a> {
             lexer: Lexer::new(src),
             lookahead: Vec::new(),
             last_end: 0,
+            control_enabled: false,
         }
     }
 
@@ -143,14 +147,9 @@ impl<'a> Parser<'a> {
                 TokKind::Import => items.push(Item::Import(self.parse_import()?)),
                 TokKind::Fn | TokKind::Func => items.push(Item::Function(self.parse_function()?)),
                 _ => {
-                    return Err(CompileError::at(
-                        format!(
-                            "expected 'import', 'fn' or 'func' at top level, found {:?}",
-                            tok.kind
-                        ),
-                        self.file.clone(),
-                        tok.span,
-                    ));
+                    // Top-level statements: they form the implicit entry point.
+                    let stmt = self.parse_stmt()?;
+                    items.push(Item::Top(stmt));
                 }
             }
         }
@@ -202,10 +201,250 @@ impl<'a> Parser<'a> {
         if self.at(&TokKind::Semi)? {
             end = self.next()?.span.end;
         }
+        if name == "control" {
+            self.control_enabled = true;
+        }
         Ok(Import {
             name,
             span: Span::new(kw.span.start, end),
         })
+    }
+
+    /// 1-based line number of a byte offset.
+    fn line_of(&self, offset: usize) -> usize {
+        self.src[..offset.min(self.src.len())].matches('\n').count() + 1
+    }
+
+    /// Leading whitespace width of the line containing `offset`.
+    fn line_indent(&self, offset: usize) -> usize {
+        let offset = offset.min(self.src.len());
+        let line_start = self.src[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        self.src[line_start..]
+            .chars()
+            .take_while(|c| *c == ' ' || *c == '\t')
+            .count()
+    }
+
+    /// Body of a control flow statement, after its `:`. Accepts a `{ ... }`
+    /// block, a single statement on the same line, or an indented block on
+    /// the following lines (no braces needed).
+    fn parse_control_body(&mut self) -> Result<Block, CompileError> {
+        // The ':' was just consumed, so last_end points at the end of the
+        // control flow header line.
+        if self.at(&TokKind::LBrace)? {
+            let tok = self.peek()?.clone();
+            return Err(CompileError::at(
+                "control flow bodies are Python-style: use indentation after ':', not { }",
+                self.file.clone(),
+                tok.span,
+            ));
+        }
+        let colon_line = self.line_of(self.last_end);
+        let next = self.peek()?.clone();
+        if self.line_of(next.span.start) == colon_line {
+            // Single statement on the same line.
+            let stmt = self.parse_stmt()?;
+            return Ok(Block::Stmts(vec![stmt]));
+        }
+        // Indented block: statements more indented than the header line.
+        let base_indent = self.line_indent(self.last_end);
+        let mut stmts = Vec::new();
+        loop {
+            let tok = self.peek()?.clone();
+            if matches!(tok.kind, TokKind::Eof | TokKind::RBrace) {
+                break;
+            }
+            if self.line_indent(tok.span.start) <= base_indent {
+                break;
+            }
+            stmts.push(self.parse_stmt()?);
+        }
+        Ok(Block::Stmts(stmts))
+    }
+
+    fn parse_if(&mut self) -> Result<Stmt, CompileError> {
+        self.next()?; // 'if'
+        let cond = self.parse_expr()?;
+        self.expect(&TokKind::Colon)?;
+        let then = self.parse_control_body()?;
+        let mut else_ifs = Vec::new();
+        let mut else_branch = None;
+        loop {
+            if self.at(&TokKind::ElseIf)? {
+                self.next()?;
+                let econd = self.parse_expr()?;
+                self.expect(&TokKind::Colon)?;
+                let ebody = self.parse_control_body()?;
+                else_ifs.push((econd, ebody));
+            } else if self.at(&TokKind::Else)? {
+                self.next()?;
+                self.expect(&TokKind::Colon)?;
+                let ebody = self.parse_control_body()?;
+                else_branch = Some(ebody);
+                break;
+            } else {
+                break;
+            }
+        }
+        Ok(Stmt::If {
+            cond,
+            then,
+            else_ifs,
+            else_branch,
+        })
+    }
+
+    fn parse_while(&mut self) -> Result<Stmt, CompileError> {
+        self.next()?; // 'while'
+        let cond = self.parse_expr()?;
+        self.expect(&TokKind::Colon)?;
+        let body = self.parse_control_body()?;
+        Ok(Stmt::While { cond, body })
+    }
+
+    fn parse_for(&mut self) -> Result<Stmt, CompileError> {
+        self.next()?; // 'for'
+        let (var, _) = self.expect_ident("loop variable")?;
+        self.expect(&TokKind::In)?;
+        let start = self.parse_expr()?;
+        let inclusive = if self.at(&TokKind::DotDotEq)? {
+            self.next()?;
+            true
+        } else if self.at(&TokKind::DotDot)? {
+            self.next()?;
+            false
+        } else {
+            let tok = self.peek()?.clone();
+            return Err(CompileError::at(
+                format!("expected '..' or '..=' in for loop, found {:?}", tok.kind),
+                self.file.clone(),
+                tok.span,
+            ));
+        };
+        let end = self.parse_expr()?;
+        self.expect(&TokKind::Colon)?;
+        let body = self.parse_control_body()?;
+        Ok(Stmt::For {
+            var,
+            start,
+            end,
+            inclusive,
+            body,
+        })
+    }
+
+    fn parse_each(&mut self) -> Result<Stmt, CompileError> {
+        self.next()?; // 'each'
+        let (var, _) = self.expect_ident("loop variable")?;
+        self.expect(&TokKind::In)?;
+        let iter = self.parse_expr()?;
+        self.expect(&TokKind::Colon)?;
+        let body = self.parse_control_body()?;
+        Ok(Stmt::Each { var, iter, body })
+    }
+
+    fn parse_switch(&mut self) -> Result<Stmt, CompileError> {
+        let kw = self.next()?; // 'switch'
+        let base_indent = self.line_indent(kw.span.start);
+        let value = self.parse_expr()?;
+        self.expect(&TokKind::Colon)?;
+        let mut arms = Vec::new();
+        let mut default = None;
+
+        let in_braces = self.at(&TokKind::LBrace)?;
+        if in_braces {
+            self.next()?; // '{'
+        }
+        loop {
+            if self.at(&TokKind::Case)? {
+                let ck = self.next()?;
+                let cbase = self.line_indent(ck.span.start);
+                let arm_val = self.parse_expr()?;
+                self.expect(&TokKind::Colon)?;
+                let arm_body = self.parse_control_body_with_base(cbase)?;
+                arms.push((arm_val, arm_body));
+            } else if self.at(&TokKind::Default)? {
+                let dk = self.next()?;
+                let dbase = self.line_indent(dk.span.start);
+                self.expect(&TokKind::Colon)?;
+                let dbody = self.parse_control_body_with_base(dbase)?;
+                default = Some(dbody);
+                break;
+            } else {
+                break;
+            }
+            if in_braces && self.at(&TokKind::RBrace)? {
+                break;
+            }
+            if !in_braces {
+                let p = self.peek()?.clone();
+                if self.line_indent(p.span.start) <= base_indent {
+                    break;
+                }
+            }
+        }
+        if in_braces {
+            self.expect(&TokKind::RBrace)?;
+        }
+        Ok(Stmt::Switch {
+            value,
+            arms,
+            default,
+        })
+    }
+
+    fn parse_try(&mut self) -> Result<Stmt, CompileError> {
+        self.next()?; // 'try'
+        self.expect(&TokKind::Colon)?;
+        let body = self.parse_control_body()?;
+        let mut catch_var = None;
+        let mut catch_body = None;
+        if self.at(&TokKind::Catch)? {
+            self.next()?;
+            if matches!(&self.peek()?.kind, TokKind::Ident(_))
+                && matches!(&self.peek2()?.kind, TokKind::Colon)
+            {
+                catch_var = Some(self.expect_ident("catch variable")?.0);
+            }
+            self.expect(&TokKind::Colon)?;
+            catch_body = Some(self.parse_control_body()?);
+        }
+        Ok(Stmt::Try {
+            body,
+            catch_var,
+            catch_body,
+        })
+    }
+
+    /// Like `parse_control_body` but with an explicit base indentation (for
+    /// `case` / `default` arms, whose header sits at their own indent level).
+    fn parse_control_body_with_base(&mut self, base_indent: usize) -> Result<Block, CompileError> {
+        if self.at(&TokKind::LBrace)? {
+            let tok = self.peek()?.clone();
+            return Err(CompileError::at(
+                "control flow bodies are Python-style: use indentation after ':', not { }",
+                self.file.clone(),
+                tok.span,
+            ));
+        }
+        let colon_line = self.line_of(self.last_end);
+        let next = self.peek()?.clone();
+        if self.line_of(next.span.start) == colon_line {
+            let stmt = self.parse_stmt()?;
+            return Ok(Block::Stmts(vec![stmt]));
+        }
+        let mut stmts = Vec::new();
+        loop {
+            let tok = self.peek()?.clone();
+            if matches!(tok.kind, TokKind::Eof | TokKind::RBrace) {
+                break;
+            }
+            if self.line_indent(tok.span.start) <= base_indent {
+                break;
+            }
+            stmts.push(self.parse_stmt()?);
+        }
+        Ok(Block::Stmts(stmts))
     }
 
     fn parse_function(&mut self) -> Result<Function, CompileError> {
@@ -366,6 +605,44 @@ impl<'a> Parser<'a> {
                     span: Span::new(kw.span.start, open.span.end),
                 })
             }
+            TokKind::If
+            | TokKind::While
+            | TokKind::For
+            | TokKind::Each
+            | TokKind::Switch
+            | TokKind::Try => {
+                if !self.control_enabled {
+                    return Err(CompileError::at(
+                        "control flow requires 'import control' at the top of the file",
+                        self.file.clone(),
+                        tok.span,
+                    ));
+                }
+                match tok.kind {
+                    TokKind::If => self.parse_if(),
+                    TokKind::While => self.parse_while(),
+                    TokKind::For => self.parse_for(),
+                    TokKind::Each => self.parse_each(),
+                    TokKind::Switch => self.parse_switch(),
+                    TokKind::Try => self.parse_try(),
+                    _ => unreachable!(),
+                }
+            }
+            TokKind::Else | TokKind::ElseIf => Err(CompileError::at(
+                "unexpected 'else' / 'else_if' without a matching 'if'",
+                self.file.clone(),
+                tok.span,
+            )),
+            TokKind::Case | TokKind::Default => Err(CompileError::at(
+                "unexpected 'case' / 'default' outside a 'switch'",
+                self.file.clone(),
+                tok.span,
+            )),
+            TokKind::Catch => Err(CompileError::at(
+                "unexpected 'catch' without a matching 'try'",
+                self.file.clone(),
+                tok.span,
+            )),
             _ => {
                 let expr = self.parse_expr()?;
                 self.end_stmt()?;
@@ -748,8 +1025,17 @@ mod tests {
     }
 
     #[test]
-    fn rejects_stray_top_level_statement() {
-        let err = parse("call_sys(\"x\")", "test.zero").unwrap_err();
-        assert!(err.message.contains("expected 'import', 'fn' or 'func'"));
+    fn allows_top_level_statements() {
+        // Top-level statements form the implicit entry point (no main).
+        let prog = parse("call_sys(\"x\")\nx = 1", "test.zero").unwrap();
+        assert!(matches!(&prog.items[0], Item::Top(_)));
+        assert!(matches!(&prog.items[1], Item::Top(_)));
+    }
+
+    #[test]
+    fn rejects_brace_control_flow() {
+        // Python-style: control flow uses ':' + indentation, not { }.
+        let err = parse("import control\nfn main() { if 1: { x = 1 } }", "test.zero").unwrap_err();
+        assert!(err.message.contains("Python-style"));
     }
 }

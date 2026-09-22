@@ -99,6 +99,11 @@ impl Loader {
             .collect();
 
         for imp in imports {
+            // 0. control-flow library: pure syntax, enabled by the parser
+            if imp.name == "control" {
+                continue;
+            }
+
             // 1. standard library headers
             if STD_DEPS.iter().any(|(name, _)| *name == imp.name) {
                 self.load_std(&imp.name)?;

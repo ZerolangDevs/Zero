@@ -2,7 +2,5 @@
 import io
 import "greet"
 
-fn main() {
-    greet("world")
-    print("[main] back in main\n")
-}
+greet("world")
+print("[main] back in main\n")

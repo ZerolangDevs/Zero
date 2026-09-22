@@ -1,7 +1,8 @@
 //! Zero compiler CLI.
 //!
-//! Usage: zeroc <input.zero> [-o <output.rs>]
-//! Without `-o`, the generated Rust code is printed to stdout.
+//! Usage: zeroc <input.zero> [-o <output.rs>] [--build]
+//! Without `-o`, the generated Rust code is printed to stdout. With
+//! `--build`, the Rust code is compiled into an executable via `rustc`.
 
 mod ast;
 mod codegen;
@@ -12,7 +13,7 @@ mod parser;
 mod scope;
 
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 
 use diag::CompileError;
 
@@ -21,15 +22,17 @@ Zero compiler (zeroc) v0.3.0
 Compiles Zero source code to Rust.
 
 USAGE:
-    zeroc <input.zero> [-o <output.rs>]
+    zeroc <input.zero> [-o <output.rs>] [--build]
 
 OPTIONS:
     -o <output.rs>   Write generated Rust code to a file (default: stdout)
+    --build          After generating Rust code, compile it into an
+                     executable with rustc (sits next to the .rs file)
     -h, --help       Show this help
 
 EXAMPLES:
     zeroc hello.zero -o hello.rs
-    rustc hello.rs -o hello
+    zeroc hello.zero --build            # hello.rs + hello / hello.exe
 ";
 
 fn main() -> ExitCode {
@@ -42,6 +45,7 @@ fn main() -> ExitCode {
 
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
+    let mut build = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -55,6 +59,7 @@ fn main() -> ExitCode {
                     }
                 }
             }
+            "--build" => build = true,
             other if input.is_none() => input = Some(PathBuf::from(other)),
             other => {
                 eprintln!("error: unexpected argument '{other}'");
@@ -72,24 +77,95 @@ fn main() -> ExitCode {
     };
 
     match compile(&input) {
-        Ok(code) => match output {
-            Some(out) => {
-                if let Err(e) = std::fs::write(&out, &code) {
-                    eprintln!("error: cannot write '{}': {e}", out.display());
-                    return ExitCode::FAILURE;
+        Ok(code) => {
+            if build {
+                build_and_compile(&input, output.as_deref(), &code)
+            } else {
+                match output {
+                    Some(out) => {
+                        if let Err(e) = std::fs::write(&out, &code) {
+                            eprintln!("error: cannot write '{}': {e}", out.display());
+                            return ExitCode::FAILURE;
+                        }
+                        println!("✓ generated {}", out.display());
+                        ExitCode::SUCCESS
+                    }
+                    None => {
+                        print!("{code}");
+                        ExitCode::SUCCESS
+                    }
                 }
-                println!("✓ generated {}", out.display());
-                ExitCode::SUCCESS
             }
-            None => {
-                print!("{code}");
-                ExitCode::SUCCESS
-            }
-        },
+        }
         Err(err) => {
             eprintln!("{}", render_error(&err));
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Generate Rust code to disk and compile it into an executable.
+fn build_and_compile(input: &Path, output: Option<&Path>, code: &str) -> ExitCode {
+    // Resolve the Rust output path: `-o` wins, otherwise `<stem>.rs` in the
+    // current directory, based on the input file name.
+    let rust_path = match output {
+        Some(p) => p.to_path_buf(),
+        None => {
+            let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
+            PathBuf::from(format!("{stem}.rs"))
+        }
+    };
+
+    if let Err(e) = std::fs::write(&rust_path, code) {
+        eprintln!("error: cannot write '{}': {e}", rust_path.display());
+        return ExitCode::FAILURE;
+    }
+    println!("✓ generated {}", rust_path.display());
+
+    match build_with_rustc(&rust_path) {
+        Ok(exe_path) => {
+            println!("✓ built {}", exe_path.display());
+            ExitCode::SUCCESS
+        }
+        Err(msg) => {
+            eprintln!("error: {msg}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Compile a generated `.rs` file with `rustc`. The first attempt uses the
+/// default linker; if that fails (e.g. no MSVC `link.exe`), it retries with
+/// the `rust-lld` linker bundled with the Rust toolchain.
+fn build_with_rustc(rust_path: &Path) -> Result<PathBuf, String> {
+    let exe_path = rust_path.with_extension(exe_suffix());
+
+    let run = |use_lld: bool| -> Result<bool, String> {
+        let mut cmd = Command::new("rustc");
+        cmd.arg(rust_path).arg("-o").arg(&exe_path);
+        if use_lld {
+            cmd.args(["-C", "linker=rust-lld"]);
+        }
+        let status = cmd.status().map_err(|e| format!("cannot run rustc: {e}"))?;
+        Ok(status.success())
+    };
+
+    if run(false)? {
+        return Ok(exe_path);
+    }
+    eprintln!("note: rustc failed with the default linker, retrying with the bundled rust-lld...");
+    if run(true)? {
+        return Ok(exe_path);
+    }
+    Err(format!("rustc failed to build '{}'", rust_path.display()))
+}
+
+/// Executable suffix for the current platform ("" on Unix).
+fn exe_suffix() -> &'static str {
+    if cfg!(windows) {
+        "exe"
+    } else {
+        ""
     }
 }
 
@@ -104,9 +180,22 @@ fn compile(input: &Path) -> Result<String, CompileError> {
     })?;
 
     let prog = parser::parse(&src, &file)?;
-    if !prog.has_main() {
+    let has_top = prog
+        .items
+        .iter()
+        .any(|item| matches!(item, ast::Item::Top(_)));
+    let has_main = prog.has_main();
+    if has_top {
+        // Python-style entry: top-level statements, no `main` function.
+        if has_main {
+            return Err(CompileError::new(
+                "the entry point is the top-level code; remove 'fn main'",
+                file,
+            ));
+        }
+    } else if !has_main {
         return Err(CompileError::new(
-            "no 'fn main' function found in program",
+            "no top-level statements or 'fn main' function found",
             file,
         ));
     }

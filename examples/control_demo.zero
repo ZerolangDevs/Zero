@@ -1,0 +1,57 @@
+// control_demo.zero - 控制流（库 control）：Python 风格，顶层即入口
+import io
+import control
+
+// ---- if / else_if / else ----
+x = 10
+if x > 0:
+    print("if: x is positive\n")
+else_if x == 0:
+    print("if: x is zero\n")
+else:
+    print("if: x is negative\n")
+
+// ---- 同行单语句 ----
+score = 85
+if score >= 60: print("single-line if: pass\n")
+else: print("single-line if: fail\n")
+
+// ---- while ----
+n = 0
+while n < 3:
+    print("while: n = {}\n", n)
+    n = n + 1
+
+// ---- for 范围循环（累加）----
+sum = 0
+for i in 1..5:
+    sum = sum + i
+print("for: sum 1..5 = {}\n", sum)
+
+// ---- for 闭区间 ----
+for i in 0..=2: print("for inclusive: i = {}\n", i)
+
+// ---- each 遍历数字范围 ----
+each k in 3:
+    print("each range: k = {}\n", k)
+
+// ---- each 遍历字符串字符 ----
+each ch in "Zero":
+    print("each char: {}\n", ch)
+
+// ---- switch ----
+day = 2
+switch day:
+    case 1:
+        print("switch: Monday\n")
+    case 2:
+        print("switch: Tuesday\n")
+    default:
+        print("switch: other day\n")
+
+// ---- try-catch ----
+try:
+    call_rust("panic!(\"boom\");")
+catch e:
+    print("try-catch: caught {}\n", e)
+print("after try-catch\n")

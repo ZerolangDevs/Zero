@@ -25,6 +25,9 @@ pub struct Program {
 pub enum Item {
     Import(Import),
     Function(Function),
+    /// A top-level statement. Top-level statements form the implicit entry
+    /// point (no `main` function needed).
+    Top(Stmt),
 }
 
 #[derive(Debug, Clone)]

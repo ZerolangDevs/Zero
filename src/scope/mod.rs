@@ -55,6 +55,19 @@ impl<'a> ScopeAnalyzer<'a> {
     }
 
     pub fn analyze_program(&mut self, prog: &Program) -> Result<(), CompileError> {
+        // Top-level statements form the implicit entry point: analyse them
+        // inside a fresh scope, as if they were one function body.
+        let tops: Vec<Stmt> = prog
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Top(stmt) => Some(stmt.clone()),
+                _ => None,
+            })
+            .collect();
+        if !tops.is_empty() {
+            self.analyze_block(&Block::Stmts(tops), None)?;
+        }
         for item in &prog.items {
             if let Item::Function(f) = item {
                 self.analyze_function(f)?;
@@ -93,27 +106,27 @@ impl<'a> ScopeAnalyzer<'a> {
                     span,
                 } => {
                     self.analyze_expr(value)?;
-                    let result = {
-                        let current = self.current_mut();
-                        match current.symbols.get(name).copied() {
-                            Some(prev_const) => {
-                                if *is_const {
-                                    Err(format!(
-                                        "cannot declare immutable variable '{name}': it already exists in this scope"
-                                    ))
-                                } else if prev_const {
-                                    Err(format!("cannot assign to immutable variable '{name}'"))
-                                } else {
-                                    Ok(())
-                                }
-                            }
-                            None => {
-                                current.symbols.insert(name.clone(), *is_const);
-                                Ok(())
-                            }
-                        }
+                    // Dynamic semantics: update the nearest existing binding
+                    // (across scopes, so loops can accumulate), otherwise
+                    // create a new variable in the current scope.
+                    let existing = self
+                        .scopes
+                        .iter()
+                        .rev()
+                        .find_map(|sc| sc.symbols.get(name).copied());
+                    let msg = match existing {
+                        Some(_) if *is_const => Some(format!(
+                            "cannot declare immutable variable '{name}': it already exists"
+                        )),
+                        Some(true) => Some(format!("cannot assign to immutable variable '{name}'")),
+                        Some(false) | None => None,
                     };
-                    result.map_err(|m| self.err(m, *span))?;
+                    if let Some(m) = msg {
+                        return Err(self.err(m, *span));
+                    }
+                    if existing.is_none() {
+                        self.current_mut().symbols.insert(name.clone(), *is_const);
+                    }
                 }
                 Stmt::Expr(expr) => {
                     // Bare identifiers as statements are allowed (no-op).
@@ -159,9 +172,88 @@ impl<'a> ScopeAnalyzer<'a> {
                         }
                     }
                 }
+                Stmt::If {
+                    cond,
+                    then,
+                    else_ifs,
+                    else_branch,
+                } => {
+                    self.analyze_expr(cond)?;
+                    self.analyze_block(then, None)?;
+                    for (econd, ebody) in else_ifs {
+                        self.analyze_expr(econd)?;
+                        self.analyze_block(ebody, None)?;
+                    }
+                    if let Some(ebody) = else_branch {
+                        self.analyze_block(ebody, None)?;
+                    }
+                }
+                Stmt::While { cond, body } => {
+                    self.analyze_expr(cond)?;
+                    self.analyze_block(body, None)?;
+                }
+                Stmt::For {
+                    var,
+                    start,
+                    end,
+                    body,
+                    ..
+                } => {
+                    self.analyze_expr(start)?;
+                    self.analyze_expr(end)?;
+                    self.analyze_block(body, Some(var))?;
+                }
+                Stmt::Each { var, iter, body } => {
+                    self.analyze_expr(iter)?;
+                    self.analyze_block(body, Some(var))?;
+                }
+                Stmt::Switch {
+                    value,
+                    arms,
+                    default,
+                } => {
+                    self.analyze_expr(value)?;
+                    for (av, abody) in arms {
+                        self.analyze_expr(av)?;
+                        self.analyze_block(abody, None)?;
+                    }
+                    if let Some(dbody) = default {
+                        self.analyze_block(dbody, None)?;
+                    }
+                }
+                Stmt::Try {
+                    body,
+                    catch_var,
+                    catch_body,
+                } => {
+                    self.analyze_block(body, None)?;
+                    if let Some(cbody) = catch_body {
+                        self.analyze_block(cbody, catch_var.as_deref())?;
+                    }
+                }
             }
         }
         Ok(())
+    }
+
+    /// Analyse a block in a fresh scope; `extra` names a variable that is
+    /// pre-declared in that scope (loop/catch variables).
+    fn analyze_block(&mut self, block: &Block, extra: Option<&str>) -> Result<(), CompileError> {
+        match block {
+            Block::Stmts(stmts) => {
+                let mut scope = Scope {
+                    symbols: HashMap::new(),
+                };
+                if let Some(v) = extra {
+                    scope.symbols.insert(v.to_string(), false);
+                }
+                self.scopes.push(scope);
+                let result = self.analyze_stmts(stmts);
+                self.scopes.pop();
+                result
+            }
+            Block::Raw(_) => Ok(()),
+        }
     }
 
     fn analyze_expr(&mut self, expr: &Expr) -> Result<(), CompileError> {
@@ -400,7 +492,31 @@ mod tests {
     #[test]
     fn cannot_redeclare_const_with_marker() {
         let err = analyze("fn main() { x = 1\nx = 2<const> }", false).unwrap_err();
-        assert!(err.message.contains("it already exists in this scope"));
+        assert!(err.message.contains("it already exists"));
+    }
+
+    #[test]
+    fn const_cannot_be_reassigned_from_inner_scope() {
+        // Assignment updates the nearest binding, so an inner scope cannot
+        // overwrite an outer immutable variable.
+        let err = analyze(
+            "fn main() { x = 1<const>\nscope highlevel { x = 2 } }",
+            false,
+        )
+        .unwrap_err();
+        assert!(err
+            .message
+            .contains("cannot assign to immutable variable 'x'"));
+    }
+
+    #[test]
+    fn inner_scope_updates_outer_mutable() {
+        // Dynamic semantics: assignment updates the nearest existing binding.
+        analyze(
+            "fn main() { x = 1\nscope highlevel { x = 2 }\nscope highlevel { y = x } }",
+            false,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -437,11 +553,9 @@ mod tests {
     }
 
     #[test]
-    fn const_can_be_shadowed_in_inner_scope() {
-        // An inner-scope assignment creates a new variable; the outer const
-        // is untouched, so this is legal.
+    fn loop_accumulation_works() {
         analyze(
-            "fn main() { x = 1<const>\nscope highlevel { x = 2 } }",
+            "import control\nfn main() { sum = 0\nfor i in 0..5:\n    sum = sum + i }",
             false,
         )
         .unwrap();

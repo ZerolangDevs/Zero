@@ -1,9 +1,7 @@
-// main.zero - header imports: .zh (compiled Zero) and .rs (raw Rust)
-import stdio
+// main.zero - 头文件导入：.zh（编译的 Zero）和 .rs（原生 Rust）
+import io
 import "headers/helpers"
 import "headers/extra.rs"
 
-fn main() {
-    greet()
-    rust_helper()
-}
+greet()
+rust_helper()

@@ -1,25 +1,29 @@
-// scope_demo.zero - scope mechanism: highlevel (default) / lowlevel
-import stdio
+// scope_demo.zero - 作用域机制：highlevel（默认）/ lowlevel
+// 赋值语义：更新最近绑定（跨作用域）
+import io
 
-fn main() {
-    name = "Zero"
+name = "Zero"
 
-    // call_rust runs in an implicit lowlevel scope and can see
-    // variables declared in the surrounding highlevel scope.
-    call_rust("println!(\"highlevel var: {}\", name);")
+// call_rust 处于隐式 lowlevel 作用域，可访问变量
+call_rust("println!(\"highlevel var: {}\", name);")
 
-    // A highlevel scope block: shadowing inside, restored outside.
-    scope highlevel {
-        name = "inner Zero"
-        call_rust("println!(\"inner scope var: {}\", name);")
-    }
+// 内层赋值会更新外层绑定
+scope highlevel {
+    name = "inner Zero"
+    call_rust("println!(\"updated from inner scope: {}\", name);")
+}
 
-    call_rust("println!(\"back to outer var: {}\", name);")
+call_rust("println!(\"outer now: {}\", name);")
 
-    // Explicit lowlevel scope: raw Rust, scoped to this block.
-    scope lowlevel {
-        let x = 40;
-        let y = 2;
-        println!("lowlevel scope: x + y = {}", x + y);
-    }
+// 内层新建变量仅在该块内可见
+scope highlevel {
+    local = "only here"
+    call_rust("println!(\"local inside block: {}\", local);")
+}
+
+// 显式 lowlevel 作用域：直接写 Rust
+scope lowlevel {
+    let x = 40;
+    let y = 2;
+    println!("lowlevel scope: x + y = {}", x + y);
 }

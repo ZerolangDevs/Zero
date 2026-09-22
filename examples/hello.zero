@@ -1,8 +1,6 @@
-// hello.zero - the three builtin functions in action
-import stdio
+// hello.zero - 三个内置底层函数（顶层代码即入口，无需 main）
+import io
 
-fn main() {
-    call_sys("echo [call_sys] Hello from Zero!")
-    call_rust("println!(\"[call_rust] Hello from Zero!\");")
-    call_rust("println!(\"[call_rust] 1 + 1 = {}\", 1 + 1);")
-}
+call_sys("echo [call_sys] Hello from Zero!")
+call_rust("println!(\"[call_rust] Hello from Zero!\");")
+call_rust("println!(\"[call_rust] 1 + 1 = {}\", 1 + 1);")

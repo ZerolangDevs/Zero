@@ -22,4 +22,42 @@ pub enum Stmt {
         block: Block,
         span: Span,
     },
+    /// `if cond: body else_if cond: body else: body`
+    If {
+        cond: Expr,
+        then: Block,
+        else_ifs: Vec<(Expr, Block)>,
+        else_branch: Option<Block>,
+    },
+    /// `while cond: body`
+    While {
+        cond: Expr,
+        body: Block,
+    },
+    /// `for var in start..end: body` (or `..=` for inclusive)
+    For {
+        var: String,
+        start: Expr,
+        end: Expr,
+        inclusive: bool,
+        body: Block,
+    },
+    /// `each var in iter: body` - iterates over a range (Int) or chars (Str)
+    Each {
+        var: String,
+        iter: Expr,
+        body: Block,
+    },
+    /// `switch value: { case v: body ... default: body }`
+    Switch {
+        value: Expr,
+        arms: Vec<(Expr, Block)>,
+        default: Option<Block>,
+    },
+    /// `try: body catch var: body`
+    Try {
+        body: Block,
+        catch_var: Option<String>,
+        catch_body: Option<Block>,
+    },
 }

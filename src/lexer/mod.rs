@@ -173,6 +173,18 @@ impl<'a> Lexer<'a> {
             "fn" => TokKind::Fn,
             "func" => TokKind::Func,
             "return" => TokKind::Return,
+            "if" => TokKind::If,
+            "else" => TokKind::Else,
+            "else_if" => TokKind::ElseIf,
+            "while" => TokKind::While,
+            "for" => TokKind::For,
+            "each" => TokKind::Each,
+            "in" => TokKind::In,
+            "switch" => TokKind::Switch,
+            "case" => TokKind::Case,
+            "default" => TokKind::Default,
+            "try" => TokKind::Try,
+            "catch" => TokKind::Catch,
             "import" => TokKind::Import,
             "scope" => TokKind::Scope,
             "highlevel" => TokKind::HighLevel,
@@ -227,7 +239,17 @@ impl<'a> Lexer<'a> {
             }
             '.' => {
                 self.bump();
-                TokKind::Dot
+                if self.peek_char() == Some('.') {
+                    self.bump();
+                    if self.peek_char() == Some('=') {
+                        self.bump();
+                        TokKind::DotDotEq
+                    } else {
+                        TokKind::DotDot
+                    }
+                } else {
+                    TokKind::Dot
+                }
             }
             '+' => {
                 self.bump();

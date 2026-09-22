@@ -1,6 +1,8 @@
 //! Runtime sources injected into generated code.
 
 pub(crate) const ZVAL_RUNTIME: &str = r#"// === Zero dynamic value runtime (compiler-injected) ===
+use std::any::Any;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ZVal {
     Int(i64),
@@ -43,7 +45,7 @@ impl ZVal {
         }
     }
 
-    fn as_int(&self) -> Option<i64> {
+    pub fn as_int(&self) -> Option<i64> {
         match self {
             ZVal::Int(n) => Some(*n),
             _ => None,

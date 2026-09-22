@@ -19,7 +19,7 @@ pub(crate) fn std_source(name: &str) -> &'static str {
 
 /// Builtin header aliases mapped to Rust `use` statements.
 pub const BUILTIN_IMPORTS: &[(&str, &str)] = &[
-    ("stdio", "use std::io::{self, Write};"),
+    // NOTE: I/O lives in the `io` standard header, not in `stdio`.
     ("fs", "use std::fs;"),
     ("path", "use std::path::{Path, PathBuf};"),
     ("process", "use std::process::Command;"),

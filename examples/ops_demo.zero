@@ -1,40 +1,32 @@
 // ops_demo.zero - 运算符与表达式求值
 import io
 
-fn main() {
-    a = 10
-    b = 3
+a = 10
+b = 3
 
-    // 算术
-    print("a + b = {}\n", a + b)
-    print("a - b = {}\n", a - b)
-    print("a * b = {}\n", a * b)
-    print("a / b = {}\n", a / b)
-    print("a % b = {}\n", a % b)
-    print("-a = {}\n", -a)
+print("a + b = {}\n", a + b)
+print("a - b = {}\n", a - b)
+print("a * b = {}\n", a * b)
+print("a / b = {}\n", a / b)
+print("a % b = {}\n", a % b)
+print("-a = {}\n", -a)
 
-    // 比较（结果为 Bool）
-    print("a == b: {}\n", a == b)
-    print("a != b: {}\n", a != b)
-    print("a < b: {}\n", a < b)
-    print("a >= b: {}\n", a >= b)
+print("a == b: {}\n", a == b)
+print("a != b: {}\n", a != b)
+print("a < b: {}\n", a < b)
+print("a >= b: {}\n", a >= b)
 
-    // 逻辑（truthiness：非 0 即真）
-    print("a and b: {}\n", a and b)
-    print("a or b: {}\n", a or b)
-    print("!a: {}\n", !a)
+print("a and b: {}\n", a and b)
+print("a or b: {}\n", a or b)
+print("!a: {}\n", !a)
 
-    // 字符串拼接（+ 对字符串是连接）
-    name = "Zero"
-    greeting = "Hello, " + name + "!"
-    print("{}\n", greeting)
+name = "Zero"
+greeting = "Hello, " + name + "!"
+print("{}\n", greeting)
 
-    // 优先级与括号
-    x = 1 + 2 * 3
-    print("1 + 2 * 3 = {}\n", x)
-    print("(1 + 2) * 3 = {}\n", (1 + 2) * 3)
+x = 1 + 2 * 3
+print("1 + 2 * 3 = {}\n", x)
+print("(1 + 2) * 3 = {}\n", (1 + 2) * 3)
 
-    // 混合表达式
-    y = a > b and a != 0
-    print("a > b and a != 0: {}\n", y)
-}
+y = a > b and a != 0
+print("a > b and a != 0: {}\n", y)

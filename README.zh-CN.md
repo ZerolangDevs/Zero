@@ -19,18 +19,16 @@ func greetUser(name<string>): {
     print("Hello, {}!\n", name)
 }
 
-func main(): {
-    version = "0.3"
-    greetUser("Zero")
-    print("Zero v{}\n", version)
-    print("1 + 2 * 3 = {}\n", 1 + 2 * 3)
-}
+// 无需 main：顶层语句就是程序入口
+version = "0.3"
+greetUser("Zero")
+print("Zero v{}\n", version)
+print("1 + 2 * 3 = {}\n", 1 + 2 * 3)
 ```
 
 ```bash
-cargo run --release -- examples/hello_zero.zero -o hello.rs
-rustc hello.rs -o hello        # 或者：rustc -C linker=rust-lld hello.rs -o hello
-./hello
+cargo run --release -- examples/hello_zero.zero --build
+./hello_zero                   # Windows：hello_zero.exe
 ```
 
 输出：
@@ -45,7 +43,8 @@ Zero v0.3
 
 Zero 是一门小型、动态、**默认无类型**的语言，它编译成 Rust 源码，再由 `rustc` 编译为原生可执行文件。它是一个"编程语言的底层框架"：大部分时候你能享受脚本语言的轻松，而在需要时又能随时下潜到原生 Rust 或操作系统层面。
 
-- **动态变量** —— `name = value` 创建或覆盖变量，无需类型标注（`name = value<const>` 声明为不可变）。
+- **无需 `main` 函数** —— 顶层语句就是程序入口（Python 风格脚本）。
+- **动态变量** —— `name = value` 创建或覆盖变量，无需类型标注（`name = value<const>` 声明为不可变）。赋值会**更新最近存在的绑定**（跨作用域，因此循环可以累加），只有不存在时才创建新变量。
 - **作用域机制** —— 默认处于 `highlevel` 作用域；支持显式的 `scope highlevel { ... }` / `scope lowlevel { ... }` 块，以及通过 `call_rust` 直接写原生 Rust。
 - **三个内置底层钩子**：
   - `call_rust("...")` —— 在低层作用域内联一段原生 Rust 代码
@@ -54,6 +53,39 @@ Zero 是一门小型、动态、**默认无类型**的语言，它编译成 Rust
 - **运算符与表达式** —— 算术、比较、逻辑 `and` / `or`（短路求值）、一元 `-` / `!`、括号、布尔字面量。
 - **`func` 关键字与可选类型标注** —— `func add(a<int>, b<int>) -> int: a + b`；参数和返回值可以标注类型（`int` / `string` / `bool`），也可以保持动态。
 - **标准库 `io`** —— `print`、`input_s`、`input`、`set_stream`，构建在 `io -> stream_io -> stream` 依赖链之上（shell / 文件流）。
+- **控制流（`import control`）** —— `if` / `else_if` / `else`、`while`、`for x in a..b`、`each x in ...`、`switch`、`try` / `catch`。控制体以 `:` 引导，支持 `{ ... }` 块、单语句、或**不用花括号的缩进块**。
+
+## 控制流
+
+```zero
+// examples/control_demo.zero
+import io
+import control
+
+sum = 0
+for i in 1..5:                  // Python 风格：冒号 + 缩进
+    sum = sum + i
+print("sum 1..5 = {}\n", sum)
+
+if sum > 10: print("big")       // 单语句
+else: print("small")
+
+while sum > 0:
+    sum = sum - 1
+    print("sum = {}\n", sum)
+
+each ch in "Zero":              // 遍历字符串字符
+    print("char: {}\n", ch)
+
+switch sum:
+    case 0: print("zero\n")
+    default: print("other\n")
+
+try:                            // 捕获 Rust panic
+    call_rust("panic!(\"boom\");")
+catch e:
+    print("caught: {}\n", e)
+```
 
 ## 贡献规范
 
@@ -121,6 +153,7 @@ rustc out.rs -o out                # 然后运行 ./out
 ```
 
 - `zeroc <input.zero> [-o <output.rs>]` —— 不带 `-o` 时，生成的 Rust 代码输出到标准输出。
+- `zeroc <input.zero> --build` —— 生成 Rust 代码后自动调用 `rustc` 编译为可执行文件（与 `.rs` 文件同目录）。如果默认链接器缺失（例如没有 MSVC `link.exe`），会自动改用 Rust 工具链自带的 `rust-lld` 链接器重试。
 - Windows 说明：本仓库的 `.cargo/config.toml` 使用 Rust 自带的 `rust-lld` 链接器，因此即使没有 MSVC `link.exe` 也能构建。
 
 ## 项目结构
@@ -139,12 +172,12 @@ std/
   stream.rs          底层流抽象（shell / 文件）
   stream_io.rs       IO 流封装
   io.rs              面向用户的 io：print / input_s / input / set_stream
-examples/            可运行示例（hello_zero、func_typed、ops_demo……）
+examples/            可运行示例（hello_zero、func_typed、control_demo……）
 ```
 
 ## 路线图
 
-控制流（`if` / `while`）、字符串与数学标准库模块、模块系统、增量编译。以上都还没有排期——它们只是一些想法清单，欢迎贡献。
+字符串与数学标准库模块、模块系统、增量编译。以上都还没有排期——它们只是一些想法清单，欢迎贡献。
 
 ## 许可证
 

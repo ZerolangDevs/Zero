@@ -21,18 +21,16 @@ func greetUser(name<string>): {
     print("Hello, {}!\n", name)
 }
 
-func main(): {
-    version = "0.3"
-    greetUser("Zero")
-    print("Zero v{}\n", version)
-    print("1 + 2 * 3 = {}\n", 1 + 2 * 3)
-}
+// No `main`: top-level statements are the entry point.
+version = "0.3"
+greetUser("Zero")
+print("Zero v{}\n", version)
+print("1 + 2 * 3 = {}\n", 1 + 2 * 3)
 ```
 
 ```bash
-cargo run --release -- examples/hello_zero.zero -o hello.rs
-rustc hello.rs -o hello        # or: rustc -C linker=rust-lld hello.rs -o hello
-./hello
+cargo run --release -- examples/hello_zero.zero --build
+./hello_zero                   # Windows: hello_zero.exe
 ```
 
 Output:
@@ -51,8 +49,12 @@ Rust source code, which `rustc` then turns into a native binary. It is a
 language most of the time, and the ability to dive down into raw Rust or
 the OS whenever you need it.
 
+- **No `main` function** — top-level statements are the program entry
+  point (Python-style scripts).
 - **Dynamic variables** — `name = value` creates or overwrites a variable;
   no type annotations required (`name = value<const>` makes it immutable).
+  Assignment updates the nearest existing binding across scopes (so loops
+  can accumulate), creating a new variable only when none exists.
 - **Scope mechanism** — default `highlevel` scope, explicit `scope highlevel
   { ... }` / `scope lowlevel { ... }` blocks, and raw Rust via `call_rust`.
 - **Three built-in low-level hooks**:
@@ -67,6 +69,42 @@ the OS whenever you need it.
 - **Standard library `io`** — `print`, `input_s`, `input`, `set_stream`
   built on the `io -> stream_io -> stream` dependency chain (shell / file
   streams).
+- **Control flow (`import control`)** — `if` / `else_if` / `else`,
+  `while`, `for x in a..b`, `each x in ...`, `switch` and `try` / `catch`.
+  Bodies start with `:` and accept a `{ ... }` block, a single statement,
+  or an indented block with no braces at all.
+
+## Control flow
+
+```zero
+// examples/control_demo.zero
+import io
+import control
+
+sum = 0
+for i in 1..5:                  // Python-style: ':' + indentation
+    sum = sum + i
+print("sum 1..5 = {}\n", sum)
+
+if sum > 10: print("big")       // single statement
+else: print("small")
+
+while sum > 0:
+    sum = sum - 1
+    print("sum = {}\n", sum)
+
+each ch in "Zero":              // iterate over a string's characters
+    print("char: {}\n", ch)
+
+switch sum:
+    case 0: print("zero\n")
+    default: print("other\n")
+
+try:                            // catch Rust panics
+    call_rust("panic!(\"boom\");")
+catch e:
+    print("caught: {}\n", e)
+```
 
 ## Contributing
 
@@ -145,6 +183,10 @@ rustc out.rs -o out                # then run ./out
 
 - `zeroc <input.zero> [-o <output.rs>]` — without `-o`, generated Rust goes
   to stdout.
+- `zeroc <input.zero> --build` — generate Rust, then compile it into an
+  executable next to the `.rs` file by invoking `rustc` automatically. If
+  the default linker is missing (e.g. no MSVC `link.exe`), it retries with
+  the `rust-lld` linker bundled with the Rust toolchain.
 - Windows note: this repo's `.cargo/config.toml` uses Rust's bundled
   `rust-lld` linker so the project builds even without MSVC `link.exe`.
 
@@ -164,13 +206,12 @@ std/
   stream.rs          low-level stream abstraction (shell / file)
   stream_io.rs       IO stream wrapper
   io.rs              user-facing io: print / input_s / input / set_stream
-examples/            runnable examples (hello_zero, func_typed, ops_demo, ...)
+examples/            runnable examples (hello_zero, func_typed, control_demo, ...)
 ```
 
 ## Roadmap
 
-Control flow (`if` / `while`), string & math stdlib modules, a module
-system, incremental compilation. Nothing here is scheduled — it is a list
+String & math stdlib modules, a module system, incremental compilation. Nothing here is scheduled — it is a list
 of ideas, and contributions are welcome.
 
 ## License

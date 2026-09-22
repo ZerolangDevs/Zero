@@ -10,17 +10,15 @@ func describe(name<string>, age<int>) -> string: {
     return name + " (" + age + ")"
 }
 
-func main(): {
-    x = add(3, 4)
-    print("add(3, 4) = {}\n", x)
+x = add(3, 4)
+print("add(3, 4) = {}\n", x)
 
-    msg = describe("Zero", 18)
-    print("describe returned: {}\n", msg)
+msg = describe("Zero", 18)
+print("describe returned: {}\n", msg)
 
-    y = add(10, 20) * 2
-    print("add(10, 20) * 2 = {}\n", y)
+y = add(10, 20) * 2
+print("add(10, 20) * 2 = {}\n", y)
 
-    // 参数类型在运行时校验（变量传入错误类型会报错终止）
-    bad = "not a number"
-    // z = add(bad, 1)   // 取消注释：运行时 type error
-}
+// 参数类型在运行时校验（变量传入错误类型会报错终止）
+bad = "not a number"
+// z = add(bad, 1)   // 取消注释：运行时 type error

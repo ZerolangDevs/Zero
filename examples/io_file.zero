@@ -1,9 +1,7 @@
 // io_file.zero - set_stream 把输出切到文件，再切回 shell
 import io
 
-fn main() {
-    set_stream("file", "out.txt")
-    print("written to file: {}\n", 42)
-    set_stream("shell")
-    print("back to shell\n")
-}
+set_stream("file", "out.txt")
+print("written to file: {}\n", 42)
+set_stream("shell")
+print("back to shell\n")
