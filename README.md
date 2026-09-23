@@ -61,18 +61,35 @@ the OS whenever you need it.
   - `call_rust("...")` — inline raw Rust in a low-level scope
   - `call_sys("command")` — run a system command (shell/file aware)
   - `import header` — include `.zh` (compiled) / `.rs` (raw) headers
-- **Operators & expressions** — arithmetic, comparison, logical `and`/`or`
-  (short-circuiting), unary `-`/`!`, parentheses, boolean literals.
-- **`func` keyword with optional types** — `func add(a<int>, b<int>) -> int:
-  a + b`; parameters and return values may be typed (`int` / `string` /
-  `bool`) or left dynamic.
+- **Operators & expressions** — arithmetic (Int and Float), comparison,
+  logical `and`/`or` (short-circuiting), unary `-`/`!`, parentheses, boolean
+  literals, and the `NULL` value.
+- **Types & conversion** — parameters and return values may be typed
+  (`int` / `float` / `string` / `bool`) or left dynamic, and
+  `type_to<int>(x)` converts any value explicitly (`type_to<float>`,
+  `type_to<string>`, `type_to<bool>` too).
+- **`func` keyword** — `func add(a<int>, b<int>) -> int: a + b`.
+- **Compound assignment** — `+=` / `-=` / `*=` update an existing variable.
 - **Standard library `io`** — `print`, `input_s`, `input`, `set_stream`
   built on the `io -> stream_io -> stream` dependency chain (shell / file
   streams).
+- **Standard library `math`** — two headers: `lowlevel_math` (raw Rust,
+  basic operations `zadd` / `zsub` / `zmul` / `zdiv` / `zrem` / `zneg`) and
+  `math` (written in Zero, built on `lowlevel_math`) providing advanced
+  functions: `abs`, `sign`, `max`, `min`, `clamp`, `pow`, `factorial`,
+  `gcd`, `lcm`, `is_even`, `is_odd`, `digit_sum`, plus float helpers
+  `sqrt` / `floor` / `ceil` / `round`.
+- **Standard library `strings`** — two headers: `lowlevel_strings` (raw
+  Rust: `zlen` / `zupper` / `zlower` / `ztrim` / `zcontains` / ...) and
+  `strings` (written in Zero) providing `len`, `upper`, `lower`, `trim`,
+  `contains`, `startswith`, `endswith`, `char_at`, `substr`, `replace`,
+  `repeat`, `reverse`, `index_of`, `count`, `is_empty`, plus `capitalize`,
+  `count_words`, `is_palindrome`, `truncate`, `remove_spaces`.
 - **Control flow (`import control`)** — `if` / `else_if` / `else`,
-  `while`, `for x in a..b`, `each x in ...`, `switch` and `try` / `catch`.
-  Bodies start with `:` and accept a `{ ... }` block, a single statement,
-  or an indented block with no braces at all.
+  `while`, `for x in a..b`, `each x in ...`, `switch`, `try` / `catch`,
+  and `break` / `continue` inside loops. Bodies start with `:` and accept
+  a `{ ... }` block, a single statement, or an indented block with no
+  braces at all.
 
 ## Control flow
 
@@ -159,7 +176,7 @@ dynamic languages and the power of Rust.
 | Execution | compiled to Rust, then native | interpreted | interpreted / JIT | compiled native | compiled native |
 | Memory safety | inherited from Rust (safe) | GC | GC | ownership / borrowing | manual |
 | Low-level access | `call_rust` / `call_sys` / `lowlevel` | `ctypes` / `cffi` | FFI / WASM | first-class | first-class |
-| Std library | `io` / `stream` (growing) | huge | huge | std + crates | libc |
+| Std library | `io` / `stream` / `math` (growing) |
 | Learning curve | low | low | low–medium | high | medium–high |
 | Best for | teaching, scripts, quick native tools | data / glue / general | web / UI | performance / systems | embedded / low-level |
 
@@ -206,13 +223,17 @@ std/
   stream.rs          low-level stream abstraction (shell / file)
   stream_io.rs       IO stream wrapper
   io.rs              user-facing io: print / input_s / input / set_stream
+  lowlevel_math.rs   low-level math: basic arithmetic in raw Rust
+  math.zh            math library in Zero: advanced functions on lowlevel_math
+  lowlevel_strings.rs low-level string ops in raw Rust
+  strings.zh         string library in Zero: advanced functions on lowlevel_strings
 examples/            runnable examples (hello_zero, func_typed, control_demo, ...)
 ```
 
 ## Roadmap
 
-String & math stdlib modules, a module system, incremental compilation. Nothing here is scheduled — it is a list
-of ideas, and contributions are welcome.
+A module system, incremental compilation, and editor tooling. Nothing here is
+scheduled — it is a list of ideas, and contributions are welcome.
 
 ## License
 

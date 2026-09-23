@@ -8,11 +8,14 @@ pub enum TokKind {
     Ident(String),
     Str(String),
     Int(i64),
+    Float(f64),
 
     // Keywords
     Fn,
     Func,
     Return,
+    Break,
+    Continue,
     If,
     Else,
     ElseIf,
@@ -32,6 +35,7 @@ pub enum TokKind {
     Const,
     True,
     False,
+    Null,
     And,
     Or,
 
@@ -58,6 +62,9 @@ pub enum TokKind {
     Percent,
     Bang,
     Arrow,
+    PlusEq,
+    MinusEq,
+    StarEq,
     EqEq,
     BangEq,
     Le,

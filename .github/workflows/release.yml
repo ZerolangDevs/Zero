@@ -1,0 +1,21 @@
+name: release
+
+# Manual release pipeline. Trigger it from the Actions tab when you want a
+# release build; optionally extend it to publish binaries / tags.
+on:
+  workflow_dispatch:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format check
+        run: cargo fmt --check
+      - name: Run tests
+        run: cargo test
+      - name: Build release
+        run: cargo build --release

@@ -32,6 +32,9 @@ pub struct ScopeAnalyzer<'a> {
     scopes: Vec<Scope>,
     /// Declared return type of the function being analysed (None outside).
     current_ret: Option<ZType>,
+    /// Nesting depth of `while` / `for` / `each` loops, for validating
+    /// `break` / `continue`.
+    loop_depth: usize,
     file: String,
 }
 
@@ -46,6 +49,7 @@ impl<'a> ScopeAnalyzer<'a> {
             io_imported,
             scopes,
             current_ret: None,
+            loop_depth: 0,
             file: file.to_string(),
         }
     }
@@ -188,9 +192,22 @@ impl<'a> ScopeAnalyzer<'a> {
                         self.analyze_block(ebody, None)?;
                     }
                 }
+                Stmt::Break { span } => {
+                    if self.loop_depth == 0 {
+                        return Err(self.err("'break' outside of a loop", *span));
+                    }
+                }
+                Stmt::Continue { span } => {
+                    if self.loop_depth == 0 {
+                        return Err(self.err("'continue' outside of a loop", *span));
+                    }
+                }
                 Stmt::While { cond, body } => {
                     self.analyze_expr(cond)?;
-                    self.analyze_block(body, None)?;
+                    self.loop_depth += 1;
+                    let result = self.analyze_block(body, None);
+                    self.loop_depth -= 1;
+                    result?;
                 }
                 Stmt::For {
                     var,
@@ -201,11 +218,17 @@ impl<'a> ScopeAnalyzer<'a> {
                 } => {
                     self.analyze_expr(start)?;
                     self.analyze_expr(end)?;
-                    self.analyze_block(body, Some(var))?;
+                    self.loop_depth += 1;
+                    let result = self.analyze_block(body, Some(var));
+                    self.loop_depth -= 1;
+                    result?;
                 }
                 Stmt::Each { var, iter, body } => {
                     self.analyze_expr(iter)?;
-                    self.analyze_block(body, Some(var))?;
+                    self.loop_depth += 1;
+                    let result = self.analyze_block(body, Some(var));
+                    self.loop_depth -= 1;
+                    result?;
                 }
                 Stmt::Switch {
                     value,
@@ -258,7 +281,10 @@ impl<'a> ScopeAnalyzer<'a> {
 
     fn analyze_expr(&mut self, expr: &Expr) -> Result<(), CompileError> {
         match expr {
-            Expr::Int(..) | Expr::Str(..) | Expr::Bool(..) => Ok(()),
+            Expr::Int(..) | Expr::Float(..) | Expr::Str(..) | Expr::Bool(..) | Expr::Nil(..) => {
+                Ok(())
+            }
+            Expr::TypeTo { value, .. } => self.analyze_expr(value),
             Expr::Ident(name, span) => {
                 if self.resolve(name).is_none() {
                     Err(self.err(format!("undefined variable '{name}'"), *span))
@@ -395,6 +421,7 @@ impl<'a> ScopeAnalyzer<'a> {
 fn literal_type(expr: &Expr) -> Option<ZType> {
     match expr {
         Expr::Int(..) => Some(ZType::Int),
+        Expr::Float(..) => Some(ZType::Float),
         Expr::Str(..) => Some(ZType::Str),
         Expr::Bool(..) => Some(ZType::Bool),
         _ => None,

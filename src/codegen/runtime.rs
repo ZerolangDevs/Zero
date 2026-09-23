@@ -3,29 +3,51 @@
 pub(crate) const ZVAL_RUNTIME: &str = r#"// === Zero dynamic value runtime (compiler-injected) ===
 use std::any::Any;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum ZVal {
     Int(i64),
+    Float(f64),
     Str(String),
     Bool(bool),
     Nil,
+}
+
+/// Numeric equality across Int/Float (`1 == 1.0` is true); anything else
+/// compares by variant.
+impl PartialEq for ZVal {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (ZVal::Int(a), ZVal::Int(b)) => a == b,
+            (ZVal::Float(a), ZVal::Float(b)) => a == b,
+            (ZVal::Int(a), ZVal::Float(b)) => *a as f64 == *b,
+            (ZVal::Float(a), ZVal::Int(b)) => *a == *b as f64,
+            (ZVal::Str(a), ZVal::Str(b)) => a == b,
+            (ZVal::Bool(a), ZVal::Bool(b)) => a == b,
+            (ZVal::Nil, ZVal::Nil) => true,
+            _ => false,
+        }
+    }
 }
 
 impl ZVal {
     pub fn to_rust_string(&self) -> String {
         match self {
             ZVal::Int(n) => n.to_string(),
+            ZVal::Float(f) => f.to_string(),
             ZVal::Str(s) => s.clone(),
             ZVal::Bool(b) => b.to_string(),
             ZVal::Nil => "nil".to_string(),
         }
     }
 
-    /// Parse one line of input into a value (numbers become Int).
+    /// Parse one line of input into a value (numbers become Int/Float).
     pub fn from_line(s: &str) -> ZVal {
         let t = s.trim();
         if let Ok(n) = t.parse::<i64>() {
             return ZVal::Int(n);
+        }
+        if let Ok(f) = t.parse::<f64>() {
+            return ZVal::Float(f);
         }
         match t {
             "true" => return ZVal::Bool(true),
@@ -39,6 +61,7 @@ impl ZVal {
     pub fn to_bool(&self) -> bool {
         match self {
             ZVal::Int(n) => *n != 0,
+            ZVal::Float(f) => *f != 0.0,
             ZVal::Str(s) => !s.is_empty(),
             ZVal::Bool(b) => *b,
             ZVal::Nil => false,
@@ -52,10 +75,24 @@ impl ZVal {
         }
     }
 
-    /// `+`: numeric addition, or string concatenation for strings.
+    /// Numeric view of a value: `(number, is_float)`. Int is promoted to
+    /// f64 so mixed arithmetic works.
+    fn as_num(&self) -> Option<(f64, bool)> {
+        match self {
+            ZVal::Int(n) => Some((*n as f64, false)),
+            ZVal::Float(f) => Some((*f, true)),
+            _ => None,
+        }
+    }
+
+    /// `+`: numeric addition (Int stays Int unless a float is involved), or
+    /// string concatenation for strings.
     pub fn add(&self, rhs: &ZVal) -> ZVal {
         match (self, rhs) {
             (ZVal::Int(a), ZVal::Int(b)) => ZVal::Int(a + b),
+            (ZVal::Float(a), ZVal::Float(b)) => ZVal::Float(a + b),
+            (ZVal::Int(a), ZVal::Float(b)) => ZVal::Float(*a as f64 + b),
+            (ZVal::Float(a), ZVal::Int(b)) => ZVal::Float(a + *b as f64),
             (ZVal::Str(a), ZVal::Str(b)) => ZVal::Str(format!("{a}{b}")),
             (ZVal::Str(a), other) => ZVal::Str(format!("{a}{}", other.to_rust_string())),
             (other, ZVal::Str(b)) => ZVal::Str(format!("{}{b}", other.to_rust_string())),
@@ -63,48 +100,81 @@ impl ZVal {
         }
     }
 
-    /// `-`, `*`, `/`, `%`: numeric only; non-numeric operands yield Nil.
+    /// `-`: numeric only; non-numeric operands yield Nil.
     pub fn sub(&self, rhs: &ZVal) -> ZVal {
-        match (self.as_int(), rhs.as_int()) {
-            (Some(a), Some(b)) => ZVal::Int(a - b),
+        match (self.as_num(), rhs.as_num()) {
+            (Some((a, af)), Some((b, bf))) => {
+                if !af && !bf {
+                    ZVal::Int(a as i64 - b as i64)
+                } else {
+                    ZVal::Float(a - b)
+                }
+            }
             _ => ZVal::Nil,
         }
     }
 
+    /// `*`: numeric only; non-numeric operands yield Nil.
     pub fn mul(&self, rhs: &ZVal) -> ZVal {
-        match (self.as_int(), rhs.as_int()) {
-            (Some(a), Some(b)) => ZVal::Int(a * b),
+        match (self.as_num(), rhs.as_num()) {
+            (Some((a, af)), Some((b, bf))) => {
+                if !af && !bf {
+                    ZVal::Int(a as i64 * b as i64)
+                } else {
+                    ZVal::Float(a * b)
+                }
+            }
             _ => ZVal::Nil,
         }
     }
 
+    /// `/`: integer division for two Ints, float division otherwise.
+    /// Division by zero yields Nil.
     pub fn div(&self, rhs: &ZVal) -> ZVal {
-        match (self.as_int(), rhs.as_int()) {
-            (Some(_), Some(0)) => ZVal::Nil,
-            (Some(a), Some(b)) => ZVal::Int(a / b),
+        match (self.as_num(), rhs.as_num()) {
+            (Some((_, _)), Some((b, _))) if b == 0.0 => ZVal::Nil,
+            (Some((a, af)), Some((b, bf))) => {
+                if !af && !bf {
+                    ZVal::Int(a as i64 / b as i64)
+                } else {
+                    ZVal::Float(a / b)
+                }
+            }
             _ => ZVal::Nil,
         }
     }
 
+    /// `%`: remainder; integer for two Ints, float otherwise. Zero divisor
+    /// yields Nil.
     pub fn rem(&self, rhs: &ZVal) -> ZVal {
-        match (self.as_int(), rhs.as_int()) {
-            (Some(_), Some(0)) => ZVal::Nil,
-            (Some(a), Some(b)) => ZVal::Int(a % b),
+        match (self.as_num(), rhs.as_num()) {
+            (Some((_, _)), Some((b, _))) if b == 0.0 => ZVal::Nil,
+            (Some((a, af)), Some((b, bf))) => {
+                if !af && !bf {
+                    ZVal::Int(a as i64 % b as i64)
+                } else {
+                    ZVal::Float(a % b)
+                }
+            }
             _ => ZVal::Nil,
         }
     }
 
     /// Unary `-`.
     pub fn neg(&self) -> ZVal {
-        match self.as_int() {
-            Some(n) => ZVal::Int(-n),
-            None => ZVal::Nil,
+        match self {
+            ZVal::Int(n) => ZVal::Int(-n),
+            ZVal::Float(f) => ZVal::Float(-f),
+            _ => ZVal::Nil,
         }
     }
 
     fn cmp_val(&self, rhs: &ZVal) -> Option<std::cmp::Ordering> {
         match (self, rhs) {
             (ZVal::Int(a), ZVal::Int(b)) => Some(a.cmp(b)),
+            (ZVal::Float(a), ZVal::Float(b)) => a.partial_cmp(b),
+            (ZVal::Int(a), ZVal::Float(b)) => (*a as f64).partial_cmp(b),
+            (ZVal::Float(a), ZVal::Int(b)) => a.partial_cmp(&(*b as f64)),
             (ZVal::Str(a), ZVal::Str(b)) => Some(a.cmp(b)),
             _ => None,
         }
@@ -161,6 +231,7 @@ pub fn __zero_format(fmt: &str, args: &[ZVal]) -> String {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ZValType {
     Int,
+    Float,
     Str,
     Bool,
 }
@@ -170,6 +241,7 @@ pub enum ZValType {
 pub fn __zero_check_type(v: &ZVal, ty: ZValType) -> ZVal {
     let ok = match ty {
         ZValType::Int => matches!(v, ZVal::Int(_)),
+        ZValType::Float => matches!(v, ZVal::Float(_)),
         ZValType::Str => matches!(v, ZVal::Str(_)),
         ZValType::Bool => matches!(v, ZVal::Bool(_)),
     };
@@ -179,6 +251,46 @@ pub fn __zero_check_type(v: &ZVal, ty: ZValType) -> ZVal {
         eprintln!("type error: expected {ty:?}, got {:?}", v);
         std::process::exit(1);
     }
+}
+
+// --- type_to<T> conversions ---
+
+/// Convert any value to an integer (`type_to<int>(x)`).
+pub fn __zero_to_int(v: &ZVal) -> ZVal {
+    match v {
+        ZVal::Int(n) => ZVal::Int(*n),
+        ZVal::Float(f) => ZVal::Int(*f as i64),
+        ZVal::Str(s) => match s.trim().parse::<i64>() {
+            Ok(n) => ZVal::Int(n),
+            Err(_) => ZVal::Nil,
+        },
+        ZVal::Bool(b) => ZVal::Int(if *b { 1 } else { 0 }),
+        ZVal::Nil => ZVal::Nil,
+    }
+}
+
+/// Convert any value to a float (`type_to<float>(x)`).
+pub fn __zero_to_float(v: &ZVal) -> ZVal {
+    match v {
+        ZVal::Int(n) => ZVal::Float(*n as f64),
+        ZVal::Float(f) => ZVal::Float(*f),
+        ZVal::Str(s) => match s.trim().parse::<f64>() {
+            Ok(f) => ZVal::Float(f),
+            Err(_) => ZVal::Nil,
+        },
+        ZVal::Bool(b) => ZVal::Float(if *b { 1.0 } else { 0.0 }),
+        ZVal::Nil => ZVal::Nil,
+    }
+}
+
+/// Convert any value to its string form (`type_to<string>(x)`).
+pub fn __zero_to_str(v: &ZVal) -> ZVal {
+    ZVal::Str(v.to_rust_string())
+}
+
+/// Convert any value to a boolean (`type_to<bool>(x)`).
+pub fn __zero_to_bool(v: &ZVal) -> ZVal {
+    ZVal::Bool(v.to_bool())
 }
 "#;
 

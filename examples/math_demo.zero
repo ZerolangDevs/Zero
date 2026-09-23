@@ -1,0 +1,27 @@
+// math_demo.zero - 数学库 math（依赖 lowlevel_math，Zero 实现）
+import io
+import math
+
+// ---- 基本运算（来自 lowlevel_math）----
+print("add(7, 5) = {}\n", add(7, 5))
+print("sub(10, 3) = {}\n", sub(10, 3))
+print("mul(6, 7) = {}\n", mul(6, 7))
+print("div(20, 4) = {}\n", div(20, 4))
+print("rem(17, 5) = {}\n", rem(17, 5))
+print("neg(8) = {}\n", neg(8))
+
+// ---- 高级函数（Zero 实现）----
+print("abs(-12) = {}\n", abs(-12))
+print("sign(-5) = {}\n", sign(-5))
+print("sign(0) = {}\n", sign(0))
+print("sign(9) = {}\n", sign(9))
+print("max(3, 9) = {}\n", max(3, 9))
+print("min(3, 9) = {}\n", min(3, 9))
+print("clamp(15, 0, 10) = {}\n", clamp(15, 0, 10))
+print("pow(2, 10) = {}\n", pow(2, 10))
+print("factorial(6) = {}\n", factorial(6))
+print("gcd(48, 18) = {}\n", gcd(48, 18))
+print("lcm(4, 6) = {}\n", lcm(4, 6))
+print("is_even(42) = {}\n", is_even(42))
+print("is_odd(42) = {}\n", is_odd(42))
+print("digit_sum(12345) = {}\n", digit_sum(12345))

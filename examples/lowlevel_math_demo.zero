@@ -1,0 +1,10 @@
+// lowlevel_math_demo.zero - 直接使用底层数学库（仅基本运算）
+import io
+import lowlevel_math
+
+print("zadd(2, 3) = {}\n", zadd(2, 3))
+print("zsub(9, 4) = {}\n", zsub(9, 4))
+print("zmul(6, 7) = {}\n", zmul(6, 7))
+print("zdiv(20, 4) = {}\n", zdiv(20, 4))
+print("zrem(17, 5) = {}\n", zrem(17, 5))
+print("zneg(8) = {}\n", zneg(8))

@@ -119,7 +119,7 @@ impl<'a> Codegen<'a> {
         let params: Vec<String> = f
             .params
             .iter()
-            .map(|p| format!("{}: ZVal", p.name))
+            .map(|p| format!("mut {}: ZVal", p.name))
             .collect();
         self.line(&format!("fn {}({}) -> ZVal {{", f.name, params.join(", ")));
         self.indent += 1;
@@ -189,6 +189,12 @@ impl<'a> Codegen<'a> {
                         }
                         _ => self.line(&format!("return {expr};")),
                     }
+                }
+                Stmt::Break { .. } => {
+                    self.line("break;");
+                }
+                Stmt::Continue { .. } => {
+                    self.line("continue;");
                 }
                 Stmt::Scope { kind, block, .. } => {
                     self.line("{");
@@ -422,9 +428,21 @@ impl<'a> Codegen<'a> {
     fn gen_expr(&mut self, expr: &Expr) -> String {
         match expr {
             Expr::Int(v, _) => format!("ZVal::Int({v})"),
+            Expr::Float(v, _) => format!("ZVal::Float({})", rust_float_literal(*v)),
             Expr::Str(s, _) => format!("ZVal::Str({}.into())", escape_rust_string(s)),
             Expr::Bool(b, _) => format!("ZVal::Bool({b})"),
+            Expr::Nil(..) => "ZVal::Nil".to_string(),
             Expr::Ident(name, _) => format!("{name}.clone()"),
+            Expr::TypeTo { ty, value, .. } => {
+                let arg = self.gen_expr(value);
+                let helper = match ty {
+                    ZType::Int => "__zero_to_int",
+                    ZType::Float => "__zero_to_float",
+                    ZType::Str => "__zero_to_str",
+                    ZType::Bool => "__zero_to_bool",
+                };
+                format!("{helper}(&{arg})")
+            }
             Expr::Call {
                 callee,
                 args,
@@ -542,8 +560,20 @@ impl<'a> Codegen<'a> {
 fn ztype_code(ty: &ZType) -> &'static str {
     match ty {
         ZType::Int => "ZValType::Int",
+        ZType::Float => "ZValType::Float",
         ZType::Str => "ZValType::Str",
         ZType::Bool => "ZValType::Bool",
+    }
+}
+
+/// Format an `f64` as a valid Rust float literal (`2.0` stays `2.0`, not
+/// `2`, so the generated code is unambiguously a float).
+fn rust_float_literal(v: f64) -> String {
+    let s = format!("{v}");
+    if s.contains('.') || s.contains('e') || s.contains('E') || s.contains("inf") || s == "NaN" {
+        s
+    } else {
+        format!("{s}.0")
     }
 }
 
@@ -597,11 +627,12 @@ mod tests {
     #[test]
     fn function_params_and_return() {
         let out = generate_for("fn add(a, b) { return a }\nfn main() { add(1, 2) }");
-        assert!(out.contains("fn add(a: ZVal, b: ZVal) -> ZVal {"));
+        assert!(out.contains("fn add(mut a: ZVal, mut b: ZVal) -> ZVal {"));
         assert!(out.contains("add(ZVal::Int(1), ZVal::Int(2));"));
         // no trailing auto-return because the body already returns
-        assert!(!out
-            .contains("fn add(a: ZVal, b: ZVal) -> ZVal {\n    return a;\n    return ZVal::Nil;"));
+        assert!(!out.contains(
+            "fn add(mut a: ZVal, mut b: ZVal) -> ZVal {\n    return a;\n    return ZVal::Nil;"
+        ));
     }
 
     #[test]
@@ -620,7 +651,7 @@ mod tests {
     #[test]
     fn io_not_imported_keeps_user_fn() {
         let out = generate_for("fn print(a) { return a }\nfn main() { print(1) }");
-        assert!(out.contains("fn print(a: ZVal) -> ZVal {"));
+        assert!(out.contains("fn print(mut a: ZVal) -> ZVal {"));
         assert!(out.contains("print(ZVal::Int(1));"));
     }
 
@@ -667,7 +698,7 @@ mod tests {
     #[test]
     fn func_types_emit_runtime_checks() {
         let out = generate_for("func add(a<int>, b) -> int: a + b\nfn main() { add(1, 2) }");
-        assert!(out.contains("fn add(a: ZVal, b: ZVal) -> ZVal {"));
+        assert!(out.contains("fn add(mut a: ZVal, mut b: ZVal) -> ZVal {"));
         assert!(out.contains("__zero_check_type(&a, ZValType::Int);"));
         // 单表达式体 -> 隐式 return，且带返回类型校验
         assert!(
@@ -684,5 +715,63 @@ mod tests {
     #[test]
     fn escapes_strings() {
         assert_eq!(escape_rust_string("a\"b\\c"), "\"a\\\"b\\\\c\"");
+    }
+
+    #[test]
+    fn math_std_header_inlines_lowlevel_and_zero() {
+        let out = generate_for("import math\nfn main() { x = pow(2, 3)\ny = add(1, 2) }");
+        // lowlevel_math is inlined as raw Rust.
+        assert!(out.contains("std/lowlevel_math.rs"));
+        assert!(out.contains("pub fn zadd(a: ZVal, b: ZVal) -> ZVal {"));
+        assert!(out.contains("pub fn zneg(a: ZVal) -> ZVal {"));
+        // math is compiled from Zero and builds on lowlevel_math.
+        assert!(out.contains("std/math.zh"));
+        assert!(out.contains("fn add(mut a: ZVal, mut b: ZVal) -> ZVal {"));
+        assert!(out.contains("return zadd(a.clone(), b.clone());"));
+        assert!(out.contains("fn pow(mut base: ZVal, mut exp: ZVal) -> ZVal {"));
+        assert!(out.contains("fn gcd(mut a: ZVal, mut b: ZVal) -> ZVal {"));
+        assert!(out.contains("fn digit_sum(mut n: ZVal) -> ZVal {"));
+    }
+
+    #[test]
+    fn lowlevel_math_works_without_math() {
+        let out = generate_for("import lowlevel_math\nfn main() { x = zadd(1, 2) }");
+        assert!(out.contains("std/lowlevel_math.rs"));
+        assert!(out.contains("pub fn zsub(a: ZVal, b: ZVal) -> ZVal {"));
+        assert!(!out.contains("std/math.zh"));
+    }
+
+    #[test]
+    fn float_and_null_and_type_to_emit() {
+        let out = generate_for(
+            "fn main() { x = 3.14\ny = NULL\nz = type_to<int>(\"42\")\nf = type_to<float>(1)\ns = type_to<string>(2)\nb = type_to<bool>(x) }",
+        );
+        assert!(out.contains("let mut x: ZVal = ZVal::Float(3.14);"));
+        assert!(out.contains("let mut y: ZVal = ZVal::Nil;"));
+        assert!(out.contains("let mut z: ZVal = __zero_to_int(&ZVal::Str(\"42\".into()));"));
+        assert!(out.contains("let mut f: ZVal = __zero_to_float(&ZVal::Int(1));"));
+        assert!(out.contains("let mut s: ZVal = __zero_to_str(&ZVal::Int(2));"));
+        assert!(out.contains("let mut b: ZVal = __zero_to_bool(&x.clone());"));
+    }
+
+    #[test]
+    fn break_continue_emit() {
+        let out = generate_for(
+            "import control\nfn main() { for i in 0..5:\n    if i == 1:\n        continue\n    if i == 3:\n        break }",
+        );
+        assert!(out.contains("continue;"));
+        assert!(out.contains("break;"));
+    }
+
+    #[test]
+    fn strings_std_header_inlines_lowlevel_and_zero() {
+        let out =
+            generate_for("import strings\nfn main() { x = len(\"abc\")\ny = upper(\"abc\") }");
+        assert!(out.contains("std/lowlevel_strings.rs"));
+        assert!(out.contains("pub fn zlen(a: ZVal) -> ZVal {"));
+        assert!(out.contains("std/strings.zh"));
+        assert!(out.contains("fn len(mut s: ZVal) -> ZVal {"));
+        assert!(out.contains("return zlen(s.clone());"));
+        assert!(out.contains("fn capitalize(mut s: ZVal) -> ZVal {"));
     }
 }

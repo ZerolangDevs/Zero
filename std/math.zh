@@ -1,0 +1,115 @@
+// math.zh —— 数学标准库（Zero 实现，依赖 lowlevel_math）
+// 从 lowlevel_math 引入基本运算（add / sub / mul / div / rem / neg），
+// 并在此基础上实现 abs、max、min、pow、gcd、lcm 等高级函数。
+
+import lowlevel_math
+import control
+
+// ---- 基本运算（重新导出自 lowlevel_math）----
+func add(a, b): zadd(a, b)
+func sub(a, b): zsub(a, b)
+func mul(a, b): zmul(a, b)
+func div(a, b): zdiv(a, b)
+func rem(a, b): zrem(a, b)
+func neg(a): zneg(a)
+
+// ---- 高级函数 ----
+
+// 绝对值
+func abs(a): {
+    if a < 0:
+        return neg(a)
+    return a
+}
+
+// 符号：正数 1、零 0、负数 -1
+func sign(a): {
+    if a > 0:
+        return 1
+    if a < 0:
+        return -1
+    return 0
+}
+
+// 最大值
+func max(a, b): {
+    if a > b:
+        return a
+    return b
+}
+
+// 最小值
+func min(a, b): {
+    if a < b:
+        return a
+    return b
+}
+
+// 钳制到 [lo, hi] 区间
+func clamp(x, lo, hi): {
+    if x < lo:
+        return lo
+    if x > hi:
+        return hi
+    return x
+}
+
+// 整数幂（exp >= 0 时正确，exp < 0 返回 1）
+func pow(base, exp): {
+    r = 1
+    for i in 0..exp:
+        r = mul(r, base)
+    return r
+}
+
+// 阶乘（0! = 1）
+func factorial(n): {
+    r = 1
+    for i in 1..=n:
+        r = mul(r, i)
+    return r
+}
+
+// 最大公约数（欧几里得算法）
+func gcd(a, b): {
+    a = abs(a)
+    b = abs(b)
+    while b != 0:
+        t = rem(a, b)
+        a = b
+        b = t
+    return a
+}
+
+// 最小公倍数
+func lcm(a, b): {
+    if a == 0 and b == 0:
+        return 0
+    return abs(div(mul(a, b), gcd(a, b)))
+}
+
+// 是否为偶数
+func is_even(a): {
+    return rem(a, 2) == 0
+}
+
+// 是否为奇数
+func is_odd(a): {
+    return rem(a, 2) != 0
+}
+
+// 数位之和
+func digit_sum(n): {
+    n = abs(n)
+    s = 0
+    while n != 0:
+        s = s + rem(n, 10)
+        n = div(n, 10)
+    return s
+}
+
+// ---- 浮点函数（来自 lowlevel_math）----
+func sqrt(a): zsqrt(a)
+func floor(a): zfloor(a)
+func ceil(a): zceil(a)
+func round(a): zround(a)

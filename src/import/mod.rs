@@ -1,13 +1,14 @@
 //! Header import resolution for the Zero language.
 //!
 //! `import name` resolves in this order:
-//!   1. standard library headers `io` / `stream_io` / `stream` (dependency
-//!      chain `io -> stream_io -> stream`, all inlined as raw Rust)
+//!   1. standard library headers (dependency chains `io -> stream_io ->
+//!      stream`, `math -> lowlevel_math`, `strings -> lowlevel_strings`;
+//!      stream* and the lowlevel_* headers are inlined as raw Rust, `math`
+//!      and `strings` are written in Zero and compiled)
 //!   2. builtin alias table                  -> emits a Rust `use` statement
 //!   3. a file next to the importing source:
 //!        - `<name>.zh` / `<name>.zero` -> recursively compiled Zero header
 //!        - `<name>.rs`                 -> raw Rust, inlined verbatim
-//!
 //! Files are included once even when reachable through several imports.
 
 use std::collections::{HashMap, HashSet};
@@ -207,7 +208,8 @@ impl Loader {
             }
         }
 
-        // Dependencies first, then the header itself (stream < stream_io < io).
+        // Dependencies first, then the header itself
+        // (stream < stream_io < io, lowlevel_math < math).
         for dep in STD_DEPS
             .iter()
             .find(|(n, _)| *n == name)
@@ -217,7 +219,29 @@ impl Loader {
             self.load_std(dep)?;
         }
 
+        if name == "math" || name == "strings" {
+            // These std headers are written in Zero: parse them like a
+            // `.zh` header so their functions participate in scope analysis
+            // and codegen. They build on the matching raw-Rust lowlevel
+            // header (loaded above).
+            let display = format!("std/{name}.zh");
+            let header_prog = parser::parse(std_source(name), &display)?;
+            for f in header_prog.functions() {
+                if f.name != "main" {
+                    self.register_function(f, &display)?;
+                }
+            }
+            self.zero_headers.push((display, header_prog));
+            return Ok(());
+        }
+
+        // Every other std header is raw Rust: inline it. The lowlevel
+        // headers additionally expose callable names (`zadd`, `zlen`, ...)
+        // used by their Zero wrappers.
         let content = std_source(name);
+        if name == "lowlevel_math" || name == "lowlevel_strings" {
+            self.register_rust_fns(&content);
+        }
         self.rust_headers
             .push((format!("std/{name}.rs"), content.to_string()));
         Ok(())
@@ -228,6 +252,11 @@ impl Loader {
     /// false positives only widen the set of callable names, never break.
     /// Arity is unknown for raw Rust functions, so it is left unchecked.
     fn register_rust_fns(&mut self, content: &str) {
+        // Byte-wise scan that stays on UTF-8 char boundaries, so headers
+        // with non-ASCII comments (e.g. Chinese) never panic. A light
+        // heuristic: strings/comments are not skipped, but false positives
+        // only widen the set of callable names, never break. Arity is
+        // unknown for raw Rust functions, so it is left unchecked.
         let bytes = content.as_bytes();
         let mut i = 0;
         while i < bytes.len() {
@@ -250,7 +279,11 @@ impl Loader {
                 }
                 i = j;
             } else {
+                // Advance past one full UTF-8 character.
                 i += 1;
+                while i < bytes.len() && (bytes[i] & 0b1100_0000) == 0b1000_0000 {
+                    i += 1;
+                }
             }
         }
     }

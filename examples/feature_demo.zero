@@ -1,0 +1,80 @@
+// feature_demo.zero - 新特性验证：浮点 / NULL / type_to / 复合赋值 / break-continue / strings
+import io
+import control
+import strings
+import math
+
+// ---- 浮点数 ----
+pi = 3.14
+r = 2.5
+area = pi * r * r
+print("pi = {}\n", pi)
+print("area = pi * r * r = {}\n", area)
+print("1.0 + 2 = {}\n", 1.0 + 2)
+print("5 / 2 = {}\n", 5 / 2)
+print("5 / 2.0 = {}\n", 5 / 2.0)
+print("1 == 1.0: {}\n", 1 == 1.0)
+print("2.5 > 2: {}\n", 2.5 > 2)
+
+// ---- math 浮点函数 ----
+print("sqrt(16) = {}\n", sqrt(16))
+print("floor(3.7) = {}\n", floor(3.7))
+print("ceil(3.2) = {}\n", ceil(3.2))
+print("round(3.5) = {}\n", round(3.5))
+
+// ---- NULL ----
+n = NULL
+print("NULL prints as: {}\n", n)
+print("n == NULL: {}\n", n == NULL)
+if n == NULL:
+    print("n is NULL\n")
+
+// ---- type_to ----
+x = type_to<int>("42")
+print("type_to<int>(\"42\") = {}\n", x)
+y = type_to<float>(7)
+print("type_to<float>(7) = {}\n", y)
+s = type_to<string>(3.14)
+print("type_to<string>(3.14) = {}\n", s)
+b = type_to<bool>("hello")
+print("type_to<bool>(\"hello\") = {}\n", b)
+
+// ---- 复合赋值 ----
+acc = 0
+acc += 10
+acc -= 3
+acc *= 4
+print("acc = {}\n", acc)
+
+// ---- break / continue ----
+sum = 0
+for i in 0..10:
+    if i == 2:
+        continue
+    if i == 7:
+        break
+    sum += i
+print("sum (skip 2, stop before 7) = {}\n", sum)
+
+// ---- strings ----
+name = "  Hello Zero  "
+print("len(name) = {}\n", len(name))
+print("trim(name) = {}\n", trim(name))
+print("upper(name) = {}\n", upper(name))
+print("lower(name) = {}\n", lower(name))
+print("contains(name, \"Zero\"): {}\n", contains(name, "Zero"))
+print("startswith(name, \"  \"): {}\n", startswith(name, "  "))
+print("endswith(name, \"  \"): {}\n", endswith(name, "  "))
+print("char_at(name, 2) = {}\n", char_at(name, 2))
+print("substr(name, 2, 5) = {}\n", substr(name, 2, 5))
+print("replace(name, \"Zero\", \"World\") = {}\n", replace(name, "Zero", "World"))
+print("repeat(\"ab\", 3) = {}\n", repeat("ab", 3))
+print("reverse(\"Zero\") = {}\n", reverse("Zero"))
+print("index_of(name, \"Zero\") = {}\n", index_of(name, "Zero"))
+print("count(\"banana\", \"na\") = {}\n", count("banana", "na"))
+print("is_empty(\"\"): {}\n", is_empty(""))
+print("capitalize(\"hello zero\") = {}\n", capitalize("hello zero"))
+print("count_words(\"hello zero world\") = {}\n", count_words("hello zero world"))
+print("is_palindrome(\"racecar\"): {}\n", is_palindrome("racecar"))
+print("truncate(\"abcdefghij\", 4) = {}\n", truncate("abcdefghij", 4))
+print("remove_spaces(\"a b c\") = {}\n", remove_spaces("a b c"))

@@ -50,10 +50,17 @@ Zero 是一门小型、动态、**默认无类型**的语言，它编译成 Rust
   - `call_rust("...")` —— 在低层作用域内联一段原生 Rust 代码
   - `call_sys("命令")` —— 调用系统命令（shell / 文件流感知）
   - `import 头文件` —— 导入 `.zh`（递归编译）或 `.rs`（原样内联）头文件
-- **运算符与表达式** —— 算术、比较、逻辑 `and` / `or`（短路求值）、一元 `-` / `!`、括号、布尔字面量。
-- **`func` 关键字与可选类型标注** —— `func add(a<int>, b<int>) -> int: a + b`；参数和返回值可以标注类型（`int` / `string` / `bool`），也可以保持动态。
+- **运算符与表达式** —— 算术（支持 `int` 与 `float`）、比较、逻辑 `and` / `or`（短路求值）、一元 `-` / `!`、括号、布尔字面量，以及 `NULL` 值。
+- **类型与转换** —— 参数和返回值可以标注类型（`int` / `float` / `string` / `bool`），也可以保持动态；`type_to<int>(x)` 可显式转换任意值（同样支持 `type_to<float>`、`type_to<string>`、`type_to<bool>`）。
+- **`func` 关键字** —— `func add(a<int>, b<int>) -> int: a + b`。
+- **复合赋值** —— `+=` / `-=` / `*=` 更新已存在的变量。
 - **标准库 `io`** —— `print`、`input_s`、`input`、`set_stream`，构建在 `io -> stream_io -> stream` 依赖链之上（shell / 文件流）。
-- **控制流（`import control`）** —— `if` / `else_if` / `else`、`while`、`for x in a..b`、`each x in ...`、`switch`、`try` / `catch`。控制体以 `:` 引导，支持 `{ ... }` 块、单语句、或**不用花括号的缩进块**。
+- **标准库 `math`** —— 包含两个头文件：`lowlevel_math`（原生 Rust，基本运算
+  `zadd` / `zsub` / `zmul` / `zdiv` / `zrem` / `zneg`）和 `math`（用 Zero 编写，
+  构建于 `lowlevel_math` 之上）提供高级函数：`abs`、`sign`、`max`、`min`、
+  `clamp`、`pow`、`factorial`、`gcd`、`lcm`、`is_even`、`is_odd`、`digit_sum`，以及浮点辅助函数 `sqrt` / `floor` / `ceil` / `round`。
+- **标准库 `strings`** —— 包含两个头文件：`lowlevel_strings`（原生 Rust：`zlen` / `zupper` / `zlower` / `ztrim` / `zcontains` / ……）和 `strings`（用 Zero 编写）提供 `len`、`upper`、`lower`、`trim`、`contains`、`startswith`、`endswith`、`char_at`、`substr`、`replace`、`repeat`、`reverse`、`index_of`、`count`、`is_empty`，以及 `capitalize`、`count_words`、`is_palindrome`、`truncate`、`remove_spaces`。
+- **控制流（`import control`）** —— `if` / `else_if` / `else`、`while`、`for x in a..b`、`each x in ...`、`switch`、`try` / `catch`，以及循环内的 `break` / `continue`。控制体以 `:` 引导，支持 `{ ... }` 块、单语句、或**不用花括号的缩进块**。
 
 ## 控制流
 
@@ -172,12 +179,16 @@ std/
   stream.rs          底层流抽象（shell / 文件）
   stream_io.rs       IO 流封装
   io.rs              面向用户的 io：print / input_s / input / set_stream
+  lowlevel_math.rs   底层数学：原生 Rust 基本运算
+  math.zh            数学库（Zero 实现）：基于 lowlevel_math 的高级函数
+  lowlevel_strings.rs 底层字符串操作：原生 Rust
+  strings.zh         字符串库（Zero 实现）：基于 lowlevel_strings 的高级函数
 examples/            可运行示例（hello_zero、func_typed、control_demo……）
 ```
 
 ## 路线图
 
-字符串与数学标准库模块、模块系统、增量编译。以上都还没有排期——它们只是一些想法清单，欢迎贡献。
+模块系统、增量编译、编辑器工具链。以上都还没有排期——它们只是一些想法清单，欢迎贡献。
 
 ## 许可证
 

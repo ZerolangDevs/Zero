@@ -44,6 +44,7 @@ pub struct Import {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ZType {
     Int,
+    Float,
     Str,
     Bool,
 }
@@ -52,7 +53,8 @@ impl ZType {
     pub fn from_name(s: &str) -> Option<ZType> {
         match s {
             "int" => Some(ZType::Int),
-            "string" => Some(ZType::Str),
+            "float" => Some(ZType::Float),
+            "string" | "str" => Some(ZType::Str),
             "bool" => Some(ZType::Bool),
             _ => None,
         }
@@ -62,6 +64,7 @@ impl ZType {
     pub fn name(&self) -> &'static str {
         match self {
             ZType::Int => "int",
+            ZType::Float => "float",
             ZType::Str => "string",
             ZType::Bool => "bool",
         }

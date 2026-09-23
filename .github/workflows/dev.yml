@@ -1,0 +1,23 @@
+name: dev
+
+# Runs on every commit pushed to `dev` (and on PRs targeting it).
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format check
+        run: cargo fmt --check
+      - name: Run tests
+        run: cargo test
+      - name: Build release
+        run: cargo build --release

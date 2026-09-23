@@ -519,7 +519,7 @@ impl<'a> Parser<'a> {
                 "any" => Ok(None),
                 _ => ZType::from_name(&name).map(Some).ok_or_else(|| {
                     CompileError::at(
-                        format!("unknown type '{name}' (expected int, string, bool or any)"),
+                        format!("unknown type '{name}' (expected int, float, string, bool or any)"),
                         self.file.clone(),
                         tok.span,
                     )
@@ -550,11 +550,32 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, CompileError> {
-        // `name = expr` is a dynamic variable assignment/creation.
+        // `name = expr` (or `+=` / `-=` / `*=`) is a dynamic variable
+        // assignment/creation. Compound forms desugar in parse_assign.
         let is_assign = matches!(self.peek()?.kind, TokKind::Ident(_))
-            && matches!(self.peek2()?.kind, TokKind::Equal);
+            && matches!(
+                self.peek2()?.kind,
+                TokKind::Equal | TokKind::PlusEq | TokKind::MinusEq | TokKind::StarEq
+            );
         if is_assign {
             return self.parse_assign();
+        }
+
+        // `break` / `continue` are only meaningful inside loops.
+        if matches!(self.peek()?.kind, TokKind::Break | TokKind::Continue) {
+            if !self.control_enabled {
+                return Err(CompileError::at(
+                    "'break' / 'continue' require 'import control'",
+                    self.file.clone(),
+                    self.peek()?.span,
+                ));
+            }
+            let tok = self.next()?;
+            self.end_stmt()?;
+            return Ok(match tok.kind {
+                TokKind::Break => Stmt::Break { span: tok.span },
+                _ => Stmt::Continue { span: tok.span },
+            });
         }
 
         let tok = self.peek()?.clone();
@@ -653,8 +674,35 @@ impl<'a> Parser<'a> {
 
     fn parse_assign(&mut self) -> Result<Stmt, CompileError> {
         let (name, name_span) = self.expect_ident("variable name")?;
-        self.expect(&TokKind::Equal)?;
-        let value = self.parse_expr()?;
+        let op_tok = self.next()?;
+        let op = match op_tok.kind {
+            TokKind::Equal => None,
+            TokKind::PlusEq => Some(BinOp::Add),
+            TokKind::MinusEq => Some(BinOp::Sub),
+            TokKind::StarEq => Some(BinOp::Mul),
+            other => {
+                return Err(CompileError::at(
+                    format!("expected assignment operator, found {other:?}"),
+                    self.file.clone(),
+                    op_tok.span,
+                ));
+            }
+        };
+        let rhs = self.parse_expr()?;
+        // Compound forms desugar to `name = name op rhs`, so the scope
+        // analyzer and codegen handle them with no extra machinery.
+        let value = match op {
+            None => rhs,
+            Some(bop) => {
+                let span = Span::new(name_span.start, rhs.span().end);
+                Expr::Binary {
+                    op: bop,
+                    lhs: Box::new(Expr::Ident(name.clone(), name_span)),
+                    rhs: Box::new(rhs),
+                    span,
+                }
+            }
+        };
         // Optional immutability marker: `name = expr<const>`
         let (is_const, span) = if self.at(&TokKind::Lt)? {
             self.next()?;
@@ -751,11 +799,32 @@ impl<'a> Parser<'a> {
         let tok = self.next()?;
         let expr = match tok.kind {
             TokKind::Int(v) => Expr::Int(v, tok.span),
+            TokKind::Float(v) => Expr::Float(v, tok.span),
             TokKind::Str(s) => Expr::Str(s, tok.span),
             TokKind::True => Expr::Bool(true, tok.span),
             TokKind::False => Expr::Bool(false, tok.span),
+            TokKind::Null => Expr::Nil(tok.span),
             TokKind::Ident(name) => {
-                if self.at(&TokKind::LParen)? {
+                if name == "type_to" && self.at(&TokKind::Lt)? {
+                    // `type_to<int>(expr)` — explicit type conversion.
+                    self.next()?; // '<'
+                    let ty = self.parse_type_name()?.ok_or_else(|| {
+                        CompileError::at(
+                            "type_to requires a concrete type (int, float, string or bool)",
+                            self.file.clone(),
+                            tok.span,
+                        )
+                    })?;
+                    self.expect(&TokKind::Gt)?;
+                    self.expect(&TokKind::LParen)?;
+                    let value = self.parse_expr()?;
+                    let close = self.expect(&TokKind::RParen)?;
+                    Expr::TypeTo {
+                        ty,
+                        value: Box::new(value),
+                        span: Span::new(tok.span.start, close.span.end),
+                    }
+                } else if self.at(&TokKind::LParen)? {
                     self.next()?;
                     let mut args = Vec::new();
                     if !self.at(&TokKind::RParen)? {
@@ -1037,5 +1106,114 @@ mod tests {
         // Python-style: control flow uses ':' + indentation, not { }.
         let err = parse("import control\nfn main() { if 1: { x = 1 } }", "test.zero").unwrap_err();
         assert!(err.message.contains("Python-style"));
+    }
+
+    #[test]
+    fn parses_float_literal() {
+        let prog = parse("fn main() { x = 3.14 }", "test.zero").unwrap();
+        let Item::Function(f) = &prog.items[0] else {
+            panic!("expected function")
+        };
+        let Block::Stmts(stmts) = &f.body else {
+            panic!("expected stmts")
+        };
+        let Stmt::Assign { value, .. } = &stmts[0] else {
+            panic!("expected assign")
+        };
+        assert!(matches!(value, Expr::Float(v, _) if (*v - 3.14).abs() < 1e-9));
+    }
+
+    #[test]
+    fn parses_null_literal() {
+        let prog = parse("fn main() { x = NULL }", "test.zero").unwrap();
+        let Item::Function(f) = &prog.items[0] else {
+            panic!("expected function")
+        };
+        let Block::Stmts(stmts) = &f.body else {
+            panic!("expected stmts")
+        };
+        let Stmt::Assign { value, .. } = &stmts[0] else {
+            panic!("expected assign")
+        };
+        assert!(matches!(value, Expr::Nil(_)));
+    }
+
+    #[test]
+    fn compound_assignment_desugars() {
+        let prog = parse("fn main() { x = 1\nx += 2\nx -= 1\nx *= 3 }", "test.zero").unwrap();
+        let Item::Function(f) = &prog.items[0] else {
+            panic!("expected function")
+        };
+        let Block::Stmts(stmts) = &f.body else {
+            panic!("expected stmts")
+        };
+        let ops: Vec<BinOp> = stmts[1..]
+            .iter()
+            .filter_map(|s| match s {
+                Stmt::Assign {
+                    value: Expr::Binary { op, lhs, .. },
+                    ..
+                } => {
+                    // lhs must re-reference the same variable
+                    let Expr::Ident(name, _) = &**lhs else {
+                        panic!("expected ident lhs")
+                    };
+                    assert_eq!(name, "x");
+                    Some(*op)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ops, vec![BinOp::Add, BinOp::Sub, BinOp::Mul]);
+    }
+
+    #[test]
+    fn parses_type_to() {
+        let prog = parse("fn main() { x = type_to<int>(\"42\") }", "test.zero").unwrap();
+        let Item::Function(f) = &prog.items[0] else {
+            panic!("expected function")
+        };
+        let Block::Stmts(stmts) = &f.body else {
+            panic!("expected stmts")
+        };
+        let Stmt::Assign { value, .. } = &stmts[0] else {
+            panic!("expected assign")
+        };
+        let Expr::TypeTo {
+            ty, value: inner, ..
+        } = value
+        else {
+            panic!("expected type_to")
+        };
+        assert_eq!(*ty, ZType::Int);
+        assert!(matches!(&**inner, Expr::Str(s, _) if s == "42"));
+    }
+
+    #[test]
+    fn parses_break_continue() {
+        let prog = parse(
+            "import control\nfn main() { while 1:\n    break\n    continue }",
+            "test.zero",
+        )
+        .unwrap();
+        let Item::Function(f) = prog
+            .items
+            .iter()
+            .find(|i| matches!(i, Item::Function(_)))
+            .expect("expected function")
+        else {
+            panic!()
+        };
+        let Block::Stmts(stmts) = &f.body else {
+            panic!("expected stmts")
+        };
+        let Stmt::While { body, .. } = &stmts[0] else {
+            panic!("expected while")
+        };
+        let Block::Stmts(inner) = body else {
+            panic!("expected stmts")
+        };
+        assert!(matches!(inner[0], Stmt::Break { .. }));
+        assert!(matches!(inner[1], Stmt::Continue { .. }));
     }
 }

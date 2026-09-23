@@ -139,6 +139,9 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Lex an integer or floating-point literal. A `.` only starts the
+    /// fractional part when it is followed by a digit, so ranges (`0..5`)
+    /// are never confused with floats.
     fn lex_number(&mut self, start: usize) -> Result<TokKind, CompileError> {
         let mut text = String::new();
         while let Some(c) = self.peek_char() {
@@ -149,13 +152,75 @@ impl<'a> Lexer<'a> {
                 break;
             }
         }
-        match text.parse::<i64>() {
-            Ok(v) => Ok(TokKind::Int(v)),
-            Err(_) => Err(CompileError::at(
-                "integer literal is out of range",
-                "<source>",
-                Span::new(start, self.pos),
-            )),
+        let mut is_float = false;
+        // Fractional part: `digits.digits` (not `digits..`).
+        if self.peek_char() == Some('.')
+            && self.src[self.pos + 1..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit())
+        {
+            is_float = true;
+            text.push('.');
+            self.bump();
+            while let Some(c) = self.peek_char() {
+                if c.is_ascii_digit() {
+                    text.push(c);
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+        }
+        // Optional exponent: `1e3`, `2.5e-2`.
+        if matches!(self.peek_char(), Some('e') | Some('E')) {
+            let mut lookahead = self.pos + 1;
+            if self.src[lookahead..]
+                .chars()
+                .next()
+                .is_some_and(|c| c == '+' || c == '-')
+            {
+                lookahead += 1;
+            }
+            if self.src[lookahead..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit())
+            {
+                is_float = true;
+                text.push('e');
+                self.bump();
+                if matches!(self.peek_char(), Some('+') | Some('-')) {
+                    text.push(self.bump().unwrap());
+                }
+                while let Some(c) = self.peek_char() {
+                    if c.is_ascii_digit() {
+                        text.push(c);
+                        self.bump();
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+        if is_float {
+            match text.parse::<f64>() {
+                Ok(v) => Ok(TokKind::Float(v)),
+                Err(_) => Err(CompileError::at(
+                    "invalid float literal",
+                    "<source>",
+                    Span::new(start, self.pos),
+                )),
+            }
+        } else {
+            match text.parse::<i64>() {
+                Ok(v) => Ok(TokKind::Int(v)),
+                Err(_) => Err(CompileError::at(
+                    "integer literal is out of range",
+                    "<source>",
+                    Span::new(start, self.pos),
+                )),
+            }
         }
     }
 
@@ -194,6 +259,9 @@ impl<'a> Lexer<'a> {
             "false" => TokKind::False,
             "and" => TokKind::And,
             "or" => TokKind::Or,
+            "break" => TokKind::Break,
+            "continue" => TokKind::Continue,
+            "NULL" | "null" => TokKind::Null,
             _ => TokKind::Ident(word.to_string()),
         }
     }
@@ -253,20 +321,33 @@ impl<'a> Lexer<'a> {
             }
             '+' => {
                 self.bump();
-                TokKind::Plus
+                if self.peek_char() == Some('=') {
+                    self.bump();
+                    TokKind::PlusEq
+                } else {
+                    TokKind::Plus
+                }
             }
             '-' => {
                 self.bump();
                 if self.peek_char() == Some('>') {
                     self.bump();
                     TokKind::Arrow
+                } else if self.peek_char() == Some('=') {
+                    self.bump();
+                    TokKind::MinusEq
                 } else {
                     TokKind::Minus
                 }
             }
             '*' => {
                 self.bump();
-                TokKind::Star
+                if self.peek_char() == Some('=') {
+                    self.bump();
+                    TokKind::StarEq
+                } else {
+                    TokKind::Star
+                }
             }
             '/' => {
                 self.bump();
@@ -388,5 +469,94 @@ mod tests {
         let mut lx = Lexer::new(r#""a\"b\nc""#);
         let t = lx.next_token().unwrap();
         assert_eq!(t.kind, TokKind::Str("a\"b\nc".into()));
+    }
+
+    #[test]
+    fn lexes_float_literals() {
+        let mut lx = Lexer::new("3.14 1.0 2.5e2 0.5");
+        let mut kinds = Vec::new();
+        loop {
+            let t = lx.next_token().unwrap();
+            let done = t.kind == TokKind::Eof;
+            kinds.push(t.kind);
+            if done {
+                break;
+            }
+        }
+        assert_eq!(
+            kinds,
+            vec![
+                TokKind::Float(3.14),
+                TokKind::Float(1.0),
+                TokKind::Float(250.0),
+                TokKind::Float(0.5),
+                TokKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn ranges_are_not_floats() {
+        // `0..5` must lex as Int, DotDot, Int (not a float).
+        let mut lx = Lexer::new("0..5");
+        let t1 = lx.next_token().unwrap();
+        assert_eq!(t1.kind, TokKind::Int(0));
+        let t2 = lx.next_token().unwrap();
+        assert_eq!(t2.kind, TokKind::DotDot);
+        let t3 = lx.next_token().unwrap();
+        assert_eq!(t3.kind, TokKind::Int(5));
+    }
+
+    #[test]
+    fn lexes_compound_assignment() {
+        let mut lx = Lexer::new("x += 1\ny -= 2\nz *= 3");
+        let mut kinds = Vec::new();
+        loop {
+            let t = lx.next_token().unwrap();
+            let done = t.kind == TokKind::Eof;
+            kinds.push(t.kind);
+            if done {
+                break;
+            }
+        }
+        assert_eq!(
+            kinds,
+            vec![
+                TokKind::Ident("x".into()),
+                TokKind::PlusEq,
+                TokKind::Int(1),
+                TokKind::Ident("y".into()),
+                TokKind::MinusEq,
+                TokKind::Int(2),
+                TokKind::Ident("z".into()),
+                TokKind::StarEq,
+                TokKind::Int(3),
+                TokKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_break_continue_null() {
+        let mut lx = Lexer::new("break continue NULL null");
+        let mut kinds = Vec::new();
+        loop {
+            let t = lx.next_token().unwrap();
+            let done = t.kind == TokKind::Eof;
+            kinds.push(t.kind);
+            if done {
+                break;
+            }
+        }
+        assert_eq!(
+            kinds,
+            vec![
+                TokKind::Break,
+                TokKind::Continue,
+                TokKind::Null,
+                TokKind::Null,
+                TokKind::Eof,
+            ]
+        );
     }
 }

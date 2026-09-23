@@ -7,6 +7,8 @@ use crate::diag::Span;
 pub enum Stmt {
     /// Dynamic variable: `name = expr` creates or overwrites a variable of
     /// any type. No type annotations. `name = expr<const>` is immutable.
+    /// Compound forms (`+=`, `-=`, `*=`) are desugared by the parser into
+    /// `name = name op expr`.
     Assign {
         name: String,
         value: Expr,
@@ -16,6 +18,14 @@ pub enum Stmt {
     Expr(Expr),
     Return {
         value: Option<Expr>,
+    },
+    /// `break` — exit the innermost loop (requires `import control`).
+    Break {
+        span: Span,
+    },
+    /// `continue` — skip to the next iteration (requires `import control`).
+    Continue {
+        span: Span,
     },
     Scope {
         kind: ScopeKind,
