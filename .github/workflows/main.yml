@@ -1,11 +1,11 @@
-name: dev
+name: main
 
-# Runs on every commit pushed to `dev` (and on PRs targeting it).
+# Runs on every commit pushed to `main` (and on PRs targeting it).
 on:
   push:
-    branches: [dev]
+    branches: [main]
   pull_request:
-    branches: [dev]
+    branches: [main]
 
 jobs:
   build-test:
