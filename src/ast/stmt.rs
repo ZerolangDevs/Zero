@@ -19,6 +19,13 @@ pub enum Stmt {
     Return {
         value: Option<Expr>,
     },
+    /// Create a window: `name<win> = { x=..., y=..., size=... }`.
+    /// Requires `import win`.
+    WinCreate {
+        name: String,
+        args: Vec<(String, Expr)>,
+        span: Span,
+    },
     /// `break` — exit the innermost loop (requires `import control`).
     Break {
         span: Span,
@@ -44,12 +51,15 @@ pub enum Stmt {
         cond: Expr,
         body: Block,
     },
-    /// `for var in start..end: body` (or `..=` for inclusive)
+    /// `for var in start..end: body` (or `..=`, or the fluent range
+    /// `from(x).to(y).step(z)`).
     For {
         var: String,
         start: Expr,
         end: Expr,
         inclusive: bool,
+        /// Iteration step (defaults to 1).
+        step: Expr,
         body: Block,
     },
     /// `each var in iter: body` - iterates over a range (Int) or chars (Str)

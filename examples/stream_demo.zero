@@ -1,0 +1,12 @@
+import io
+import control
+import network
+import sleep
+
+ok = net.connect("127.0.0.1", 9001)
+print("connect: {}\n", ok)
+streaming("net", "download.txt")
+sleep(500)
+stop_streaming("net", "download.txt")
+close()
+print("net->file done\n")

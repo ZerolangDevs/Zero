@@ -28,13 +28,19 @@ impl ZStreamIO {
         Self::read_line()
     }
 
-    /// 切换当前流：`"shell"` 或 `"file"`（后跟文件名，可选）。
+    /// 切换当前流：`"shell"` / `"file"`（后跟文件名）/ `"net"`（后跟 `host:port`）。
     pub fn set(kind: &str, name: Option<&str>) {
         let mut g = zstream_global().lock().unwrap();
         match kind {
             "file" => {
                 let path = name.unwrap_or("out.txt");
                 *g = ZStream::new_file(path);
+            }
+            "net" => {
+                let addr = name.unwrap_or("127.0.0.1:8080");
+                if let Some(s) = ZStream::new_net(addr) {
+                    *g = s;
+                }
             }
             _ => {
                 *g = ZStream::new_shell();

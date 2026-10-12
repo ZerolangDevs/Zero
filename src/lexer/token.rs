@@ -56,6 +56,8 @@ pub enum TokKind {
 
     // Operators
     Plus,
+    /// `+<path>` — path-join operator (requires `import sys`).
+    PathJoin,
     Minus,
     Star,
     Slash,

@@ -54,13 +54,17 @@ Zero 是一门小型、动态、**默认无类型**的语言，它编译成 Rust
 - **类型与转换** —— 参数和返回值可以标注类型（`int` / `float` / `string` / `bool`），也可以保持动态；`type_to<int>(x)` 可显式转换任意值（同样支持 `type_to<float>`、`type_to<string>`、`type_to<bool>`）。
 - **`func` 关键字** —— `func add(a<int>, b<int>) -> int: a + b`。
 - **复合赋值** —— `+=` / `-=` / `*=` 更新已存在的变量。
-- **标准库 `io`** —— `print`、`input_s`、`input`、`set_stream`，构建在 `io -> stream_io -> stream` 依赖链之上（shell / 文件流）。
+- **标准库 `io`** —— `print`、`input_s`、`input`、`set_stream`，以及 `streaming(from, to)` / `stop_streaming(from, to)` 用于后台桥接两条流（`"shell"`、`"net"` 或文件路径）。构建在 `io -> stream_io -> stream` 依赖链之上（shell / 文件 / 网络流）。
 - **标准库 `math`** —— 包含两个头文件：`lowlevel_math`（原生 Rust，基本运算
   `zadd` / `zsub` / `zmul` / `zdiv` / `zrem` / `zneg`）和 `math`（用 Zero 编写，
   构建于 `lowlevel_math` 之上）提供高级函数：`abs`、`sign`、`max`、`min`、
   `clamp`、`pow`、`factorial`、`gcd`、`lcm`、`is_even`、`is_odd`、`digit_sum`，以及浮点辅助函数 `sqrt` / `floor` / `ceil` / `round`。
 - **标准库 `strings`** —— 包含两个头文件：`lowlevel_strings`（原生 Rust：`zlen` / `zupper` / `zlower` / `ztrim` / `zcontains` / ……）和 `strings`（用 Zero 编写）提供 `len`、`upper`、`lower`、`trim`、`contains`、`startswith`、`endswith`、`char_at`、`substr`、`replace`、`repeat`、`reverse`、`index_of`、`count`、`is_empty`，以及 `capitalize`、`count_words`、`is_palindrome`、`truncate`、`remove_spaces`。
-- **控制流（`import control`）** —— `if` / `else_if` / `else`、`while`、`for x in a..b`、`each x in ...`、`switch`、`try` / `catch`，以及循环内的 `break` / `continue`。控制体以 `:` 引导，支持 `{ ... }` 块、单语句、或**不用花括号的缩进块**。
+- **标准库 `sys`** —— 操作系统交互（`import sys`）：`path1 +<path> path2` 路径拼接运算符、`userPath()`（用户根目录）、`formatPath(path)` 路径规范化、`taskkill(target)` 结束进程（按映像名或 PID），构建于 `sys -> lowlevel_sys` 之上。
+- **标准库 `network`** —— 网络（`import network`），全部通过 `net.*` 命名空间：裸 TCP `net.connect(host, port)` / `net.send(data)` / `net.recv()` / `net.close()`，以及 HTTP 客户端（仅 `http://`）：`net.get(url)`、`net.post(url, data)`、`net.put(url, data)`、`net.delete(url)`、`net.download(url, file)`、通用 `net.httpRequest(method, url, data)`。构建于 `network -> network_stream -> stream` 之上，可与 `io.streaming` 配合管道数据。
+- **窗口库 `win`** —— 原生 GUI（`import win`，跨平台）：基于 **Slint** 并使用 **Material Design** 样式。用 `name<win> = { x=..., y=..., size=... }` 新建窗口，`win.update()` 驱动窗口，控件管理用 `win.add.button/text/input/select/selects/switch/slider/checkbox/spinbox/textedit/progress/group(...)`（命名参数 `x` / `y` / `size` / `id` / `items` / `onclick`，输入框还有 `into=(var)`）以及 `win.<id>.del()` / `win.<id>.update(...)`。`zeroc --build` 会把这类程序作为带 Slint 的 Cargo 工程来编译。
+- **控制流（`import control`）** —— `if` / `else_if` / `else`、`while`、`for x in a..b`、`each x in ...`、`switch`、`try` / `catch`，以及循环内的 `break` / `continue`。范围也可以写成流式 `for i in from(x).to(y).step(s)` —— 调用顺序任意，`from` 默认 0、`step` 默认 1，顾头不顾尾。控制体以 `:` 引导，支持 `{ ... }` 块、单语句、或**不用花括号的缩进块**。
+- **标准库 `sleep`** —— `import sleep` 提供 `sleep(ms)`，按毫秒暂停。
 
 ## 控制流
 
@@ -183,6 +187,13 @@ std/
   math.zh            数学库（Zero 实现）：基于 lowlevel_math 的高级函数
   lowlevel_strings.rs 底层字符串操作：原生 Rust
   strings.zh         字符串库（Zero 实现）：基于 lowlevel_strings 的高级函数
+  lowlevel_sys.rs    底层系统交互：原生 Rust（路径拼接/结束进程）
+  sys.zh             系统库（Zero 实现）：+<path> 运算符、formatPath、taskkill
+  lowlevel_win.rs    底层窗口后端（Slint + Material Design，Rust）
+  lowlevel_sleep.rs  底层睡眠：原生 Rust
+  sleep.zh           睡眠库（Zero 实现）：sleep(ms)
+  network_stream.rs  底层 TCP 网络：原生 Rust
+  network.zh         网络库（Zero 实现）：connect / send / recv / close
 examples/            可运行示例（hello_zero、func_typed、control_demo……）
 ```
 

@@ -77,9 +77,9 @@ fn main() -> ExitCode {
     };
 
     match compile(&input) {
-        Ok(code) => {
+        Ok((code, uses_win)) => {
             if build {
-                build_and_compile(&input, output.as_deref(), &code)
+                build_and_compile(&input, output.as_deref(), &code, uses_win)
             } else {
                 match output {
                     Some(out) => {
@@ -88,6 +88,9 @@ fn main() -> ExitCode {
                             return ExitCode::FAILURE;
                         }
                         println!("✓ generated {}", out.display());
+                        if uses_win {
+                            eprintln!("note: this program uses `win`; use --build to compile it with Slint");
+                        }
                         ExitCode::SUCCESS
                     }
                     None => {
@@ -105,7 +108,7 @@ fn main() -> ExitCode {
 }
 
 /// Generate Rust code to disk and compile it into an executable.
-fn build_and_compile(input: &Path, output: Option<&Path>, code: &str) -> ExitCode {
+fn build_and_compile(input: &Path, output: Option<&Path>, code: &str, uses_win: bool) -> ExitCode {
     // Resolve the Rust output path: `-o` wins, otherwise `<stem>.rs` in the
     // current directory, based on the input file name.
     let rust_path = match output {
@@ -122,7 +125,12 @@ fn build_and_compile(input: &Path, output: Option<&Path>, code: &str) -> ExitCod
     }
     println!("✓ generated {}", rust_path.display());
 
-    match build_with_rustc(&rust_path) {
+    let result = if uses_win {
+        build_with_cargo(&rust_path)
+    } else {
+        build_with_rustc(&rust_path)
+    };
+    match result {
         Ok(exe_path) => {
             println!("✓ built {}", exe_path.display());
             ExitCode::SUCCESS
@@ -132,6 +140,55 @@ fn build_and_compile(input: &Path, output: Option<&Path>, code: &str) -> ExitCod
             ExitCode::FAILURE
         }
     }
+}
+
+/// Build a program that uses `win` as a Cargo project with the Slint
+/// dependency (Material Design via SLINT_STYLE=material). The generated
+/// code is copied into `<stem>_app/src/main.rs`; the built executable is
+/// copied back next to the `.rs` file.
+fn build_with_cargo(rust_path: &Path) -> Result<PathBuf, String> {
+    let stem = rust_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("out");
+    let parent = rust_path.parent().unwrap_or(Path::new("."));
+    let app_dir = parent.join(format!("{stem}_app"));
+
+    let main_rs = app_dir.join("src").join("main.rs");
+    std::fs::create_dir_all(main_rs.parent().unwrap()).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(app_dir.join(".cargo")).map_err(|e| e.to_string())?;
+    std::fs::copy(rust_path, &main_rs).map_err(|e| format!("cannot copy generated code: {e}"))?;
+
+    let cargo_toml = format!(
+        "[package]\nname = \"{stem}_app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nslint = {{ version = \"1\", features = [\"backend-winit\", \"renderer-femtovg\"] }}\n\n[[bin]]\nname = \"{stem}_app\"\npath = \"src/main.rs\"\n"
+    );
+    std::fs::write(app_dir.join("Cargo.toml"), cargo_toml).map_err(|e| e.to_string())?;
+    // 共享 target 目录：同一目录下的多个窗口程序复用已编译的 Slint。
+    std::fs::write(
+        app_dir.join(".cargo").join("config.toml"),
+        "[build]\ntarget-dir = \"../.zeroc_target\"\n",
+    )
+    .map_err(|e| e.to_string())?;
+
+    let status = Command::new("cargo")
+        .current_dir(&app_dir)
+        .env("SLINT_STYLE", "material")
+        .arg("build")
+        .status()
+        .map_err(|e| format!("cannot run cargo: {e}"))?;
+    if !status.success() {
+        return Err(format!("cargo failed to build '{}'", rust_path.display()));
+    }
+
+    let bin = if exe_suffix().is_empty() {
+        format!("{stem}_app")
+    } else {
+        format!("{stem}_app.{}", exe_suffix())
+    };
+    let exe = parent.join(".zeroc_target").join("debug").join(&bin);
+    let out = rust_path.with_extension(exe_suffix());
+    std::fs::copy(&exe, &out).map_err(|e| format!("cannot copy built exe: {e}"))?;
+    Ok(out)
 }
 
 /// Compile a generated `.rs` file with `rustc`. The first attempt uses the
@@ -170,7 +227,7 @@ fn exe_suffix() -> &'static str {
 }
 
 /// Full compile pipeline: parse -> load headers -> scope analysis -> codegen.
-fn compile(input: &Path) -> Result<String, CompileError> {
+fn compile(input: &Path) -> Result<(String, bool), CompileError> {
     let file = input.display().to_string();
     let src = std::fs::read_to_string(input).map_err(|e| {
         CompileError::new(
@@ -207,14 +264,16 @@ fn compile(input: &Path) -> Result<String, CompileError> {
 
     let fns = &loader.functions;
     let io_imported = loader.io_imported;
-    let mut analyzer = scope::ScopeAnalyzer::new(fns, &file, io_imported);
+    let mut analyzer = scope::ScopeAnalyzer::new(fns, &file, io_imported, loader.sys_imported);
     analyzer.analyze_program(&prog)?;
     for (display, header_prog) in &loader.zero_headers {
-        let mut header_analyzer = scope::ScopeAnalyzer::new(fns, display, io_imported);
+        let mut header_analyzer =
+            scope::ScopeAnalyzer::new(fns, display, io_imported, loader.sys_imported);
         header_analyzer.analyze_program(header_prog)?;
     }
 
-    Ok(codegen::generate(&prog, &loader, &file))
+    let uses_win = loader.win_imported;
+    Ok((codegen::generate(&prog, &loader, &file), uses_win))
 }
 
 /// Render an error; uses the file on disk for the source snippet.

@@ -7,6 +7,8 @@ use crate::diag::Span;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
     Add,
+    /// Path join: `path1 +<path> path2` (requires `import sys`).
+    PathJoin,
     Sub,
     Mul,
     Div,
@@ -50,6 +52,21 @@ pub enum Expr {
         value: Box<Expr>,
         span: Span,
     },
+    /// Network call: `net.get(...)`, `net.connect(...)`, ... .
+    /// Requires `import network`.
+    NetCall {
+        member: String,
+        args: Vec<Expr>,
+        span: Span,
+    },
+    /// Window operation: `win.update()`, `win.add.button(...)`,
+    /// `win.<id>.del()` / `win.<id>.update(...)`. Requires `import win`.
+    WinOp {
+        win: String,
+        path: Vec<String>,
+        args: Vec<(String, Expr)>,
+        span: Span,
+    },
     Binary {
         op: BinOp,
         lhs: Box<Expr>,
@@ -74,6 +91,8 @@ impl Expr {
             | Expr::Ident(_, s)
             | Expr::Call { span: s, .. }
             | Expr::TypeTo { span: s, .. }
+            | Expr::NetCall { span: s, .. }
+            | Expr::WinOp { span: s, .. }
             | Expr::Binary { span: s, .. }
             | Expr::Unary { span: s, .. } => *s,
         }

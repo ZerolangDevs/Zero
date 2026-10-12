@@ -1,0 +1,38 @@
+// win_demo.zero - 窗口库演示（Slint + Material Design，跨平台）
+import io
+import control
+import win
+import sleep
+
+// 按钮回调（必须 0 参数）
+func onGreet(): {
+    print("Hello from button!\n")
+}
+
+func onSelect(): {
+    print("Selection changed!\n")
+}
+
+// 新建窗口
+mainWin<win> = {x=150, y=150, size="420x320"}
+
+// 添加控件
+mainWin.add.text(x=20, y=20, size="200x24", id="Zero Window Demo")
+mainWin.add.button(x=20, y=60, size="100x32", id="greet", onclick=onGreet)
+mainWin.add.select(x=140, y=60, size="140x100", id="lang", items="Zero,Rust,C", onclick=onSelect)
+mainWin.add.selects(x=300, y=60, size="100x120", id="tags", items="a,b,c")
+mainWin.add.input(x=20, y=110, size="200x24", id="nameInput", into=(userName))
+
+// 更新循环：处理窗口消息，约 1 秒后自动退出演示
+while true:
+    mainWin.update()
+    sleep(20)
+
+print("input synced: {}\n", userName)
+print("window id: {}\n", mainWin)
+
+// 修改按钮：移动 + 改名
+mainWin.greet.update(x=20, y=160, size="120x32", id="greet2")
+// 删除下拉选择
+mainWin.lang.del()
+print("update/del done\n")

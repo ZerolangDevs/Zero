@@ -324,6 +324,26 @@ impl<'a> Lexer<'a> {
                 if self.peek_char() == Some('=') {
                     self.bump();
                     TokKind::PlusEq
+                } else if self.peek_char() == Some('<') {
+                    // `+<path>` is a single path-join operator token.
+                    let save = self.pos;
+                    self.bump(); // '<'
+                    let word_start = self.pos;
+                    while let Some(c) = self.peek_char() {
+                        if c.is_alphanumeric() || c == '_' {
+                            self.bump();
+                        } else {
+                            break;
+                        }
+                    }
+                    let word = &self.src[word_start..self.pos];
+                    if word == "path" && self.peek_char() == Some('>') {
+                        self.bump();
+                        TokKind::PathJoin
+                    } else {
+                        self.pos = save; // not `+<path>`: keep `+`
+                        TokKind::Plus
+                    }
                 } else {
                     TokKind::Plus
                 }
@@ -534,6 +554,23 @@ mod tests {
                 TokKind::Eof,
             ]
         );
+    }
+
+    #[test]
+    fn lexes_path_join_operator() {
+        // `+<path>` is one token; `+<pathx` falls back to Plus + Lt.
+        let mut lx = Lexer::new("a +<path> b");
+        let t1 = lx.next_token().unwrap();
+        assert_eq!(t1.kind, TokKind::Ident("a".into()));
+        let t2 = lx.next_token().unwrap();
+        assert_eq!(t2.kind, TokKind::PathJoin);
+        let t3 = lx.next_token().unwrap();
+        assert_eq!(t3.kind, TokKind::Ident("b".into()));
+
+        let mut lx2 = Lexer::new("a +<pathx b");
+        assert_eq!(lx2.next_token().unwrap().kind, TokKind::Ident("a".into()));
+        assert_eq!(lx2.next_token().unwrap().kind, TokKind::Plus);
+        assert_eq!(lx2.next_token().unwrap().kind, TokKind::Lt);
     }
 
     #[test]

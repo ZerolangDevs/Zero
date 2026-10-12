@@ -10,6 +10,14 @@ pub const STD_DEPS: &[(&str, &[&str])] = &[
     ("lowlevel_math", &[]),
     ("strings", &["lowlevel_strings"]),
     ("lowlevel_strings", &[]),
+    ("sys", &["lowlevel_sys"]),
+    ("lowlevel_sys", &[]),
+    ("win", &["lowlevel_win"]),
+    ("lowlevel_win", &[]),
+    ("sleep", &["lowlevel_sleep"]),
+    ("lowlevel_sleep", &[]),
+    ("network_stream", &["stream"]),
+    ("network", &["network_stream"]),
 ];
 
 /// Standard library header sources, embedded into the compiler binary.
@@ -25,6 +33,12 @@ pub(crate) fn std_source(name: &str) -> &'static str {
         "math" => include_str!("../../std/math.zh"),
         "lowlevel_strings" => include_str!("../../std/lowlevel_strings.rs"),
         "strings" => include_str!("../../std/strings.zh"),
+        "lowlevel_sys" => include_str!("../../std/lowlevel_sys.rs"),
+        "sys" => include_str!("../../std/sys.zh"),
+        "lowlevel_win" => include_str!("../../std/lowlevel_win.rs"),
+        "lowlevel_sleep" => include_str!("../../std/lowlevel_sleep.rs"),
+        "sleep" => include_str!("../../std/sleep.zh"),
+        "network_stream" => include_str!("../../std/network_stream.rs"),
         _ => unreachable!("unknown std header: {name}"),
     }
 }

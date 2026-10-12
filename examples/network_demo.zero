@@ -1,0 +1,28 @@
+// network_demo.zero - 网络库演示：net.* 命名空间（HTTP + 裸 TCP）
+import io
+import network
+
+// ---- HTTP（net.get / net.post / net.put / net.delete / net.download）----
+body = net.get("http://127.0.0.1:9100/data")
+print("net.get /data: {}\n", body)
+
+r = net.post("http://127.0.0.1:9100/echo", "hello post")
+print("net.post /echo: {}\n", r)
+
+r2 = net.put("http://127.0.0.1:9100/echo", "hello put")
+print("net.put /echo: {}\n", r2)
+
+r3 = net.delete("http://127.0.0.1:9100/echo")
+print("net.delete /echo: {}\n", r3)
+
+// 自定义方法
+r4 = net.httpRequest("PATCH", "http://127.0.0.1:9100/echo", "hello patch")
+print("net.httpRequest PATCH: {}\n", r4)
+
+// chunked 传输编码
+chunk = net.get("http://127.0.0.1:9100/chunk")
+print("net.get /chunk: {}\n", chunk)
+
+// 下载到文件
+ok = net.download("http://127.0.0.1:9100/file", "dl.txt")
+print("net.download: {}\n", ok)

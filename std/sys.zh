@@ -1,0 +1,14 @@
+// sys.zh —— 系统交互标准库（Zero 实现，依赖 lowlevel_sys）
+// 提供路径拼接（运算符 +<path> 与函数 pathJoin）、用户根目录 userPath、
+// 路径格式化 formatPath，以及进程结束 taskkill。
+
+import lowlevel_sys
+
+// 路径拼接（与运算符 +<path> 等价）
+func pathJoin(a, b): zpath_join(a, b)
+// 当前用户的根目录
+func userPath(): zuser_path()
+// 规范化路径
+func formatPath(p): zformat_path(p)
+// 结束进程/任务：字符串按映像名，整数按 PID
+func taskkill(t): ztaskkill(t)

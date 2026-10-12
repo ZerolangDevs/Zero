@@ -70,8 +70,10 @@ the OS whenever you need it.
   `type_to<string>`, `type_to<bool>` too).
 - **`func` keyword** — `func add(a<int>, b<int>) -> int: a + b`.
 - **Compound assignment** — `+=` / `-=` / `*=` update an existing variable.
-- **Standard library `io`** — `print`, `input_s`, `input`, `set_stream`
-  built on the `io -> stream_io -> stream` dependency chain (shell / file
+- **Standard library `io`** — `print`, `input_s`, `input`, `set_stream`,
+  plus `streaming(from, to)` / `stop_streaming(from, to)` to bridge two
+  streams (`"shell"`, `"net"`, or a file path) in the background. Built on
+  the `io -> stream_io -> stream` dependency chain (shell / file / net
   streams).
 - **Standard library `math`** — two headers: `lowlevel_math` (raw Rust,
   basic operations `zadd` / `zsub` / `zmul` / `zdiv` / `zrem` / `zneg`) and
@@ -85,11 +87,35 @@ the OS whenever you need it.
   `contains`, `startswith`, `endswith`, `char_at`, `substr`, `replace`,
   `repeat`, `reverse`, `index_of`, `count`, `is_empty`, plus `capitalize`,
   `count_words`, `is_palindrome`, `truncate`, `remove_spaces`.
+- **Standard library `sys`** — OS interaction (`import sys`): the
+  `path1 +<path> path2` path-join operator, `userPath()` (home directory),
+  `formatPath(path)` path normalization, and `taskkill(target)` (by image
+  name or PID), built on `sys -> lowlevel_sys`.
+- **Standard library `network`** — networking (`import network`), all
+  behind the `net.*` namespace: raw TCP `net.connect(host, port)` /
+  `net.send(data)` / `net.recv()` / `net.close()`, plus an HTTP client
+  (`http://` only): `net.get(url)`, `net.post(url, data)`,
+  `net.put(url, data)`, `net.delete(url)`, `net.download(url, file)`, and
+  the generic `net.httpRequest(method, url, data)`. Built on
+  `network -> network_stream -> stream`; combine with `io.streaming` to pipe
+  data to/from files or the terminal.
+- **Window library `win`** — native GUI (`import win`, cross-platform):
+  built on **Slint** with the **Material Design** style. Create a window
+  with `name<win> = { x=..., y=..., size=... }`, drive it with
+  `win.update()`, and manage controls with `win.add.button/text/input/
+  select/selects/switch/slider/checkbox/spinbox/textedit/progress/group(...)`
+  (named args `x` / `y` / `size` / `id` / `items` / `onclick`, and
+  `into=(var)` for inputs) plus `win.<id>.del()` / `win.<id>.update(...)`.
+  `zeroc --build` compiles such programs as a Cargo project with Slint.
 - **Control flow (`import control`)** — `if` / `else_if` / `else`,
   `while`, `for x in a..b`, `each x in ...`, `switch`, `try` / `catch`,
-  and `break` / `continue` inside loops. Bodies start with `:` and accept
-  a `{ ... }` block, a single statement, or an indented block with no
-  braces at all.
+  and `break` / `continue` inside loops. Ranges can also be written fluently
+  as `for i in from(x).to(y).step(s)` — the calls are order-free, `from`
+  defaults to 0 and `step` to 1, and the end is exclusive. Bodies start with
+  `:` and accept a `{ ... }` block, a single statement, or an indented block
+  with no braces at all.
+- **Standard library `sleep`** — `import sleep` provides `sleep(ms)` to
+  pause for a given number of milliseconds.
 
 ## Control flow
 
@@ -227,6 +253,13 @@ std/
   math.zh            math library in Zero: advanced functions on lowlevel_math
   lowlevel_strings.rs low-level string ops in raw Rust
   strings.zh         string library in Zero: advanced functions on lowlevel_strings
+  lowlevel_sys.rs    low-level OS interaction in raw Rust (path join/kill)
+  sys.zh             sys library in Zero: +<path> operator, formatPath, taskkill
+  lowlevel_win.rs    low-level window backend (Slint + Material Design, Rust)
+  lowlevel_sleep.rs  low-level sleep in raw Rust
+  sleep.zh           sleep library in Zero: sleep(ms)
+  network_stream.rs  low-level TCP networking in raw Rust
+  network.zh         network library in Zero: connect / send / recv / close
 examples/            runnable examples (hello_zero, func_typed, control_demo, ...)
 ```
 

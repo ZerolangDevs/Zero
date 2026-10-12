@@ -1,0 +1,31 @@
+// sys_demo.zero - 系统交互标准库 sys（依赖 lowlevel_sys）
+import io
+import sys
+
+// ---- 路径拼接运算符 +<path> ----
+base = "C:/Users/Zero"
+sub = "Documents"
+full = base +<path> sub
+print("joined: {}\n", full)
+print("formatted: {}\n", formatPath(full))
+
+// 多层拼接 + 重复分隔符规范化
+nested = base +<path> "Projects" +<path> "Zero"
+print("nested: {}\n", formatPath(nested))
+
+// ---- pathJoin 函数（与运算符等价）----
+print("pathJoin(\"a\", \"b\") = {}\n", pathJoin("a", "b"))
+print("pathJoin(\"a/\", \"b\") = {}\n", pathJoin("a/", "b"))
+
+// ---- 格式化根路径 ----
+print("root /: {}\n", formatPath("///"))
+print("drive C:\\\\: {}\n", formatPath("C:\\"))
+print("messy: {}\n", formatPath("C:/foo//bar\\baz\\"))
+
+// ---- 当前用户根目录 ----
+home = userPath()
+print("userPath: {}\n", home)
+print("userPath +<path> Downloads: {}\n", formatPath(home +<path> "Downloads"))
+
+// ---- taskkill（按名称；不存在的进程安全返回 false）----
+print("taskkill missing: {}\n", taskkill("zero_no_such_process_xyz.exe"))

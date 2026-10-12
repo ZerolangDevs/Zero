@@ -29,6 +29,12 @@ pub struct Parser<'a> {
     /// True once `import control` has been seen: control flow keywords
     /// (`if`, `while`, `for`, `each`, `switch`, `try`) become available.
     control_enabled: bool,
+    /// True once `import win` has been seen: `<win>` windows and window
+    /// operations (`win.add.button(...)`, `win.<id>.del()`, ...) are enabled.
+    win_enabled: bool,
+    /// True once `import network` has been seen: `net.get(...)` etc. are
+    /// enabled.
+    network_enabled: bool,
 }
 
 /// Parse a source file into a program.
@@ -45,6 +51,8 @@ impl<'a> Parser<'a> {
             lookahead: Vec::new(),
             last_end: 0,
             control_enabled: false,
+            win_enabled: false,
+            network_enabled: false,
         }
     }
 
@@ -71,6 +79,16 @@ impl<'a> Parser<'a> {
     fn peek2(&mut self) -> Result<&Token, CompileError> {
         self.fill(1)?;
         Ok(&self.lookahead[1])
+    }
+
+    fn peek3(&mut self) -> Result<&Token, CompileError> {
+        self.fill(2)?;
+        Ok(&self.lookahead[2])
+    }
+
+    fn peek4(&mut self) -> Result<&Token, CompileError> {
+        self.fill(3)?;
+        Ok(&self.lookahead[3])
     }
 
     fn next(&mut self) -> Result<Token, CompileError> {
@@ -204,6 +222,12 @@ impl<'a> Parser<'a> {
         if name == "control" {
             self.control_enabled = true;
         }
+        if name == "win" {
+            self.win_enabled = true;
+        }
+        if name == "network" {
+            self.network_enabled = true;
+        }
         Ok(Import {
             name,
             span: Span::new(kw.span.start, end),
@@ -303,9 +327,89 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_for(&mut self) -> Result<Stmt, CompileError> {
-        self.next()?; // 'for'
+        let kw = self.next()?; // 'for'
         let (var, _) = self.expect_ident("loop variable")?;
         self.expect(&TokKind::In)?;
+        // Fluent range: `from(x).to(y).step(z)`, in any order. `from` and
+        // `step` are optional (defaults 0 and 1); the end is exclusive.
+        let fluent = matches!(
+            &self.peek()?.kind,
+            TokKind::Ident(s) if s == "from" || s == "to" || s == "step"
+        ) && matches!(self.peek2()?.kind, TokKind::LParen);
+        if fluent {
+            let mut from: Option<Expr> = None;
+            let mut to: Option<Expr> = None;
+            let mut step: Option<Expr> = None;
+            loop {
+                let (fname, _) = self.expect_ident("range call (from, to, step)")?;
+                self.expect(&TokKind::LParen)?;
+                let value = self.parse_expr()?;
+                self.expect(&TokKind::RParen)?;
+                match fname.as_str() {
+                    "from" => {
+                        if from.is_some() {
+                            return Err(CompileError::at(
+                                "duplicate 'from(...)' in range",
+                                self.file.clone(),
+                                kw.span,
+                            ));
+                        }
+                        from = Some(value);
+                    }
+                    "to" => {
+                        if to.is_some() {
+                            return Err(CompileError::at(
+                                "duplicate 'to(...)' in range",
+                                self.file.clone(),
+                                kw.span,
+                            ));
+                        }
+                        to = Some(value);
+                    }
+                    "step" => {
+                        if step.is_some() {
+                            return Err(CompileError::at(
+                                "duplicate 'step(...)' in range",
+                                self.file.clone(),
+                                kw.span,
+                            ));
+                        }
+                        step = Some(value);
+                    }
+                    other => {
+                        return Err(CompileError::at(
+                            format!("unknown range call '{other}' (from, to, step)"),
+                            self.file.clone(),
+                            kw.span,
+                        ));
+                    }
+                }
+                if self.at(&TokKind::Dot)? {
+                    self.next()?;
+                } else {
+                    break;
+                }
+            }
+            let Some(end) = to else {
+                return Err(CompileError::at(
+                    "a range needs 'to(...)'",
+                    self.file.clone(),
+                    kw.span,
+                ));
+            };
+            let start = from.unwrap_or(Expr::Int(0, kw.span));
+            let step = step.unwrap_or(Expr::Int(1, kw.span));
+            self.expect(&TokKind::Colon)?;
+            let body = self.parse_control_body()?;
+            return Ok(Stmt::For {
+                var,
+                start,
+                end,
+                inclusive: false,
+                step,
+                body,
+            });
+        }
         let start = self.parse_expr()?;
         let inclusive = if self.at(&TokKind::DotDotEq)? {
             self.next()?;
@@ -329,6 +433,7 @@ impl<'a> Parser<'a> {
             start,
             end,
             inclusive,
+            step: Expr::Int(1, kw.span),
             body,
         })
     }
@@ -550,6 +655,15 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, CompileError> {
+        // `name<win> = { ... }` creates a window (requires `import win`).
+        let is_win_create = matches!(self.peek()?.kind, TokKind::Ident(_))
+            && matches!(self.peek2()?.kind, TokKind::Lt)
+            && matches!(self.peek3()?.kind, TokKind::Ident(ref s) if s == "win")
+            && matches!(self.peek4()?.kind, TokKind::Gt);
+        if is_win_create {
+            return self.parse_win_create();
+        }
+
         // `name = expr` (or `+=` / `-=` / `*=`) is a dynamic variable
         // assignment/creation. Compound forms desugar in parse_assign.
         let is_assign = matches!(self.peek()?.kind, TokKind::Ident(_))
@@ -672,6 +786,56 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// `name<win> = { x=..., y=..., size=... }` — create a window.
+    fn parse_win_create(&mut self) -> Result<Stmt, CompileError> {
+        let (name, name_span) = self.expect_ident("window name")?;
+        if !self.win_enabled {
+            return Err(CompileError::at(
+                "'<win>' window syntax requires 'import win'",
+                self.file.clone(),
+                name_span,
+            ));
+        }
+        self.expect(&TokKind::Lt)?;
+        self.expect_ident("type name")?; // 'win' (checked by is_win_create)
+        self.expect(&TokKind::Gt)?;
+        self.expect(&TokKind::Equal)?;
+        self.expect(&TokKind::LBrace)?;
+        let args = self.parse_named_args_until(&TokKind::RBrace)?;
+        let close = self.expect(&TokKind::RBrace)?;
+        self.end_stmt()?;
+        Ok(Stmt::WinCreate {
+            name,
+            args,
+            span: Span::new(name_span.start, close.span.end),
+        })
+    }
+
+    /// Parse named arguments: `name = expr, name = expr, ...`, terminated by
+    /// `end` (the caller consumes `end`). Used by window creation and
+    /// window operations.
+    fn parse_named_args_until(
+        &mut self,
+        end: &TokKind,
+    ) -> Result<Vec<(String, Expr)>, CompileError> {
+        let mut args = Vec::new();
+        if self.at(end)? {
+            return Ok(args);
+        }
+        loop {
+            let (name, _) = self.expect_ident("argument name")?;
+            self.expect(&TokKind::Equal)?;
+            let value = self.parse_expr()?;
+            args.push((name, value));
+            if self.at(&TokKind::Comma)? {
+                self.next()?;
+            } else {
+                break;
+            }
+        }
+        Ok(args)
+    }
+
     fn parse_assign(&mut self) -> Result<Stmt, CompileError> {
         let (name, name_span) = self.expect_ident("variable name")?;
         let op_tok = self.next()?;
@@ -752,6 +916,7 @@ impl<'a> Parser<'a> {
         let kind = self.peek()?.kind.clone();
         let (op, prec) = match &kind {
             TokKind::Plus => (BinOp::Add, 5),
+            TokKind::PathJoin => (BinOp::PathJoin, 5),
             TokKind::Minus => (BinOp::Sub, 5),
             TokKind::Star => (BinOp::Mul, 6),
             TokKind::Slash => (BinOp::Div, 6),
@@ -860,6 +1025,66 @@ impl<'a> Parser<'a> {
                 ));
             }
         };
+        // Network calls: `net.get(...)`, `net.connect(...)`, ...
+        if let Expr::Ident(ident, _) = &expr {
+            if ident == "net" && self.at(&TokKind::Dot)? {
+                if !self.network_enabled {
+                    return Err(CompileError::at(
+                        "net.* requires 'import network'",
+                        self.file.clone(),
+                        tok.span,
+                    ));
+                }
+                self.next()?;
+                let (member, _) = self.expect_ident("net member")?;
+                self.expect(&TokKind::LParen)?;
+                let mut args = Vec::new();
+                if !self.at(&TokKind::RParen)? {
+                    loop {
+                        args.push(self.parse_expr()?);
+                        if self.at(&TokKind::Comma)? {
+                            self.next()?;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                let close = self.expect(&TokKind::RParen)?;
+                return Ok(Expr::NetCall {
+                    member,
+                    args,
+                    span: Span::new(tok.span.start, close.span.end),
+                });
+            }
+        }
+        // Window operations: `win.update()`, `win.add.button(...)`,
+        // `win.<id>.del()` / `win.<id>.update(...)`.
+        if let Expr::Ident(win, _) = &expr {
+            if self.at(&TokKind::Dot)? {
+                if !self.win_enabled {
+                    return Err(CompileError::at(
+                        "window operations require 'import win'",
+                        self.file.clone(),
+                        tok.span,
+                    ));
+                }
+                let mut path = Vec::new();
+                while self.at(&TokKind::Dot)? {
+                    self.next()?;
+                    let (seg, _) = self.expect_ident("member name")?;
+                    path.push(seg);
+                }
+                self.expect(&TokKind::LParen)?;
+                let args = self.parse_named_args_until(&TokKind::RParen)?;
+                let close = self.expect(&TokKind::RParen)?;
+                return Ok(Expr::WinOp {
+                    win: win.clone(),
+                    path,
+                    args,
+                    span: Span::new(tok.span.start, close.span.end),
+                });
+            }
+        }
         Ok(expr)
     }
 }
@@ -1187,6 +1412,132 @@ mod tests {
         };
         assert_eq!(*ty, ZType::Int);
         assert!(matches!(&**inner, Expr::Str(s, _) if s == "42"));
+    }
+
+    #[test]
+    fn parses_fluent_range_for() {
+        let prog = parse(
+            "import control\nfn main() { for i in step(2).from(1).to(9):\n    print(i) }",
+            "test.zero",
+        )
+        .unwrap();
+        let Item::Function(f) = prog
+            .items
+            .iter()
+            .find(|i| matches!(i, Item::Function(_)))
+            .expect("function")
+        else {
+            panic!()
+        };
+        let Block::Stmts(stmts) = &f.body else {
+            panic!("expected stmts")
+        };
+        let Stmt::For {
+            start,
+            end,
+            step,
+            inclusive,
+            ..
+        } = &stmts[0]
+        else {
+            panic!("expected for");
+        };
+        assert!(!inclusive);
+        // 无序：step 在前，from/to 在后
+        assert!(matches!(start, Expr::Int(1, _)));
+        assert!(matches!(end, Expr::Int(9, _)));
+        assert!(matches!(step, Expr::Int(2, _)));
+    }
+
+    #[test]
+    fn fluent_range_defaults_and_requires_to() {
+        // `to(3)` only: from defaults 0, step defaults 1.
+        let prog = parse(
+            "import control\nfn main() { for i in to(3):\n    print(i) }",
+            "test.zero",
+        )
+        .unwrap();
+        let Item::Function(f) = prog
+            .items
+            .iter()
+            .find(|i| matches!(i, Item::Function(_)))
+            .expect("function")
+        else {
+            panic!()
+        };
+        let Block::Stmts(stmts) = &f.body else {
+            panic!("expected stmts")
+        };
+        let Stmt::For { start, step, .. } = &stmts[0] else {
+            panic!("expected for")
+        };
+        assert!(matches!(start, Expr::Int(0, _)));
+        assert!(matches!(step, Expr::Int(1, _)));
+
+        // 没有 to(...) 报错
+        let err = parse(
+            "import control\nfn main() { for i in from(1):\n    print(i) }",
+            "test.zero",
+        )
+        .unwrap_err();
+        assert!(err.message.contains("to(...)"));
+    }
+
+    #[test]
+    fn parses_win_create_and_win_ops() {
+        let prog = parse(
+            "import win\nfn main() { w<win> = {x=10, y=20, size=\"400x300\"}\nw.update()\nw.add.button(x=5, id=\"b\") }",
+            "test.zero",
+        )
+        .unwrap();
+        let Item::Function(f) = prog
+            .items
+            .iter()
+            .find(|i| matches!(i, Item::Function(_)))
+            .expect("function")
+        else {
+            panic!()
+        };
+        let Block::Stmts(stmts) = &f.body else {
+            panic!("expected stmts")
+        };
+        assert!(matches!(&stmts[0], Stmt::WinCreate { name, .. } if name == "w"));
+        assert!(
+            matches!(&stmts[1], Stmt::Expr(Expr::WinOp { path, .. }) if path == &["update".to_string()])
+        );
+        let Stmt::Expr(Expr::WinOp { path, args, .. }) = &stmts[2] else {
+            panic!("expected winop")
+        };
+        assert_eq!(path, &["add".to_string(), "button".to_string()]);
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0].0, "x");
+        assert_eq!(args[1].0, "id");
+    }
+
+    #[test]
+    fn win_syntax_requires_import() {
+        let err = parse("fn main() { w<win> = {x=1} }", "test.zero").unwrap_err();
+        assert!(err.message.contains("import win"));
+        let err2 = parse("fn main() { w.update() }", "test.zero").unwrap_err();
+        assert!(err2.message.contains("import win"));
+    }
+
+    #[test]
+    fn parses_path_join_operator() {
+        let prog = parse("fn main() { p = a +<path> b }", "test.zero").unwrap();
+        let Item::Function(f) = &prog.items[0] else {
+            panic!("expected function")
+        };
+        let Block::Stmts(stmts) = &f.body else {
+            panic!("expected stmts")
+        };
+        let Stmt::Assign { value, .. } = &stmts[0] else {
+            panic!("expected assign")
+        };
+        let Expr::Binary { op, .. } = value else {
+            panic!("expected binary")
+        };
+        assert_eq!(*op, BinOp::PathJoin);
     }
 
     #[test]

@@ -190,6 +190,19 @@ impl<'a> Codegen<'a> {
                         _ => self.line(&format!("return {expr};")),
                     }
                 }
+                Stmt::WinCreate { name, args, .. } => {
+                    self.blocks
+                        .last_mut()
+                        .expect("block stack")
+                        .insert(name.clone(), false);
+                    let x = self.win_opt_arg(args, "x");
+                    let y = self.win_opt_arg(args, "y");
+                    let size = self.win_opt_arg(args, "size");
+                    let title = escape_rust_string(name);
+                    self.line(&format!(
+                        "let mut {name}: ZVal = __zero_win_create({x}, {y}, {size}, {title});"
+                    ));
+                }
                 Stmt::Break { .. } => {
                     self.line("break;");
                 }
@@ -261,10 +274,12 @@ impl<'a> Codegen<'a> {
                     start,
                     end,
                     inclusive,
+                    step,
                     body,
                 } => {
                     let s = self.gen_expr(start);
                     let e = self.gen_expr(end);
+                    let st = self.gen_expr(step);
                     let adj = if *inclusive { " + 1" } else { "" };
                     self.line(&format!(
                         "let __zero_loop_start = {s}.as_int().unwrap_or(0);"
@@ -272,9 +287,16 @@ impl<'a> Codegen<'a> {
                     self.line(&format!(
                         "let __zero_loop_end = {e}.as_int().unwrap_or(0){adj};"
                     ));
-                    self.line("for __zero_i in __zero_loop_start..__zero_loop_end {");
+                    self.line(&format!(
+                        "let __zero_loop_step = {st}.as_int().unwrap_or(1);"
+                    ));
+                    self.line("let mut __zero_i = __zero_loop_start;");
+                    self.line(
+                        "while (__zero_loop_step >= 0 && __zero_i < __zero_loop_end) || (__zero_loop_step < 0 && __zero_i > __zero_loop_end) {",
+                    );
                     self.indent += 1;
                     self.gen_block_body(body, Some((var.as_str(), "ZVal::Int(__zero_i)")));
+                    self.line("__zero_i += __zero_loop_step;");
                     self.indent -= 1;
                     self.line("}");
                 }
@@ -481,11 +503,66 @@ impl<'a> Codegen<'a> {
                     format!("{callee}({})", args_code.join(", "))
                 }
             },
+            Expr::NetCall { member, args, .. } => {
+                let fname = match member.as_str() {
+                    "connect" => "net_connect",
+                    "send" => "net_send",
+                    "recv" => "net_recv",
+                    "close" => "net_close",
+                    "get" => "http_get",
+                    "post" => "http_post",
+                    "put" => "http_put",
+                    "delete" => "http_delete",
+                    "download" => "http_download",
+                    "httpRequest" => "http_request_fn",
+                    _ => unreachable!("analyzer rejects unknown net method"),
+                };
+                let args_code: Vec<String> = args.iter().map(|a| self.gen_expr(a)).collect();
+                format!("{fname}({})", args_code.join(", "))
+            }
+            Expr::WinOp {
+                win, path, args, ..
+            } => {
+                let win_code = format!("{win}.clone()");
+                let segs: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
+                match segs.as_slice() {
+                    ["update"] => format!("__zero_win_update(&{win_code})"),
+                    ["add", kind] => {
+                        let x = self.win_opt_arg(args, "x");
+                        let y = self.win_opt_arg(args, "y");
+                        let size = self.win_opt_arg(args, "size");
+                        let id = self.win_str_arg(args, "id");
+                        let items = self.win_str_arg(args, "items");
+                        let onclick = self.win_onclick_arg(args);
+                        let into = self.win_into_arg(args);
+                        format!(
+                            "__zero_win_add({kind:?}, &{win_code}, {x}, {y}, {size}, {id}, {items}, {onclick}, {into})"
+                        )
+                    }
+                    [id, "del"] => {
+                        format!("__zero_win_del(&{win_code}, {})", escape_rust_string(id))
+                    }
+                    [id, "update"] => {
+                        let x = self.win_opt_arg(args, "x");
+                        let y = self.win_opt_arg(args, "y");
+                        let size = self.win_opt_arg(args, "size");
+                        let new_id = self.win_opt_str_arg(args, "id");
+                        let onclick = self.win_onclick_arg(args);
+                        let into = self.win_into_arg(args);
+                        format!(
+                            "__zero_win_update_control(&{win_code}, {}, {x}, {y}, {size}, {new_id}, {onclick}, {into})",
+                            escape_rust_string(id)
+                        )
+                    }
+                    _ => unreachable!("analyzer rejects unknown window op"),
+                }
+            }
             Expr::Binary { op, lhs, rhs, .. } => {
                 let l = self.gen_expr(lhs);
                 let r = self.gen_expr(rhs);
                 match op {
                     BinOp::Add => format!("{l}.add(&{r})"),
+                    BinOp::PathJoin => format!("zpath_join({l}, {r})"),
                     BinOp::Sub => format!("{l}.sub(&{r})"),
                     BinOp::Mul => format!("{l}.mul(&{r})"),
                     BinOp::Div => format!("{l}.div(&{r})"),
@@ -508,6 +585,56 @@ impl<'a> Codegen<'a> {
                     UnOp::Not => format!("ZVal::Bool(!{o}.to_bool())"),
                 }
             }
+        }
+    }
+
+    /// Optional positional window arg: `Some(&expr)` or `None`.
+    fn win_opt_arg(&mut self, args: &[(String, Expr)], key: &str) -> String {
+        match args.iter().find(|(n, _)| n == key) {
+            Some((_, e)) => format!("Some(&{})", self.gen_expr(e)),
+            None => "None".to_string(),
+        }
+    }
+
+    /// Required string window arg (`""` literal when absent).
+    fn win_str_arg(&mut self, args: &[(String, Expr)], key: &str) -> String {
+        match args.iter().find(|(n, _)| n == key) {
+            Some((_, Expr::Str(s, _))) => escape_rust_string(s),
+            _ => "\"\"".to_string(),
+        }
+    }
+
+    /// Optional string window arg: `Some("...")` or `None`.
+    fn win_opt_str_arg(&mut self, args: &[(String, Expr)], key: &str) -> String {
+        match args.iter().find(|(n, _)| n == key) {
+            Some((_, Expr::Str(s, _))) => format!("Some({})", escape_rust_string(s)),
+            _ => "None".to_string(),
+        }
+    }
+
+    /// `onclick=func` becomes `Some(func as fn() -> ZVal)`.
+    fn win_onclick_arg(&mut self, args: &[(String, Expr)]) -> String {
+        match args.iter().find(|(n, _)| n == "onclick") {
+            Some((_, Expr::Ident(f, _))) => format!("Some({f} as fn() -> ZVal)"),
+            _ => "None".to_string(),
+        }
+    }
+
+    /// `into=(var)` becomes `Some(&mut var)`; the variable is auto-declared
+    /// when it does not exist yet.
+    fn win_into_arg(&mut self, args: &[(String, Expr)]) -> String {
+        match args.iter().find(|(n, _)| n == "into") {
+            Some((_, Expr::Ident(v, _))) => {
+                if !self.blocks.iter().rev().any(|b| b.contains_key(v)) {
+                    self.line(&format!("let mut {v}: ZVal = ZVal::Str(String::new());"));
+                    self.blocks
+                        .last_mut()
+                        .expect("block stack")
+                        .insert(v.clone(), false);
+                }
+                format!("Some(&mut {v})")
+            }
+            _ => "None".to_string(),
         }
     }
 
@@ -761,6 +888,82 @@ mod tests {
         );
         assert!(out.contains("continue;"));
         assert!(out.contains("break;"));
+    }
+
+    #[test]
+    fn for_with_step_emits_while_loop() {
+        let out = generate_for(
+            "import control\nfn main() { for i in from(1).to(9).step(2):\n    print(i) }",
+        );
+        assert!(out.contains("let __zero_loop_step = ZVal::Int(2).as_int().unwrap_or(1);"));
+        assert!(out.contains("let mut __zero_i = __zero_loop_start;"));
+        assert!(out.contains(
+            "while (__zero_loop_step >= 0 && __zero_i < __zero_loop_end) || (__zero_loop_step < 0 && __zero_i > __zero_loop_end) {"
+        ));
+        assert!(out.contains("__zero_i += __zero_loop_step;"));
+        assert!(out.contains("let i: ZVal = ZVal::Int(__zero_i);"));
+    }
+
+    #[test]
+    fn network_and_streaming_emit() {
+        let out = generate_for(
+            "import io\nimport network\nfn main() { streaming(\"net\", \"out.txt\")\nstop_streaming(\"net\", \"out.txt\")\nnet.get(\"http://127.0.0.1:9/data\")\nnet.connect(\"127.0.0.1\", 9000)\nnet.post(\"u\", \"d\")\nnet.download(\"u\", \"f\") }",
+        );
+        assert!(out.contains("std/network_stream.rs"));
+        assert!(
+            out.contains("streaming(ZVal::Str(\"net\".into()), ZVal::Str(\"out.txt\".into()));")
+        );
+        assert!(out
+            .contains("stop_streaming(ZVal::Str(\"net\".into()), ZVal::Str(\"out.txt\".into()));"));
+        assert!(out.contains("http_get(ZVal::Str(\"http://127.0.0.1:9/data\".into()));"));
+        assert!(out.contains("net_connect(ZVal::Str(\"127.0.0.1\".into()), ZVal::Int(9000));"));
+        assert!(out.contains("http_post(ZVal::Str(\"u\".into()), ZVal::Str(\"d\".into()));"));
+        assert!(out.contains("http_download(ZVal::Str(\"u\".into()), ZVal::Str(\"f\".into()));"));
+    }
+
+    #[test]
+    fn sleep_std_header_emits() {
+        let out = generate_for("import sleep\nfn main() { sleep(100) }");
+        assert!(out.contains("std/lowlevel_sleep.rs"));
+        assert!(out.contains("std/sleep.zh"));
+        assert!(out.contains("fn sleep(mut ms: ZVal) -> ZVal {"));
+        assert!(out.contains("return zsleep(ms.clone());"));
+        assert!(out.contains("sleep(ZVal::Int(100));"));
+    }
+
+    #[test]
+    fn window_create_and_ops_emit() {
+        let out = generate_for(
+            "import win\nfunc cb(): 1\nfn main() { w<win> = {x=10, y=20, size=\"400x300\"}\nw.update()\nw.add.button(x=5, y=5, size=\"80x30\", id=\"b\", onclick=cb)\nw.add.input(id=\"i\", into=(v))\nw.b.del()\nw.b.update(x=9, id=\"b2\") }",
+        );
+        assert!(out.contains("fn cb"));
+        assert!(out.contains("let mut w: ZVal = __zero_win_create(Some(&ZVal::Int(10)), Some(&ZVal::Int(20)), Some(&ZVal::Str(\"400x300\".into())), \"w\");"));
+        assert!(out.contains("__zero_win_update(&w.clone());"));
+        assert!(out.contains(
+            "__zero_win_add(\"button\", &w.clone(), Some(&ZVal::Int(5)), Some(&ZVal::Int(5)), Some(&ZVal::Str(\"80x30\".into())), \"b\", \"\", Some(cb as fn() -> ZVal), None);"
+        ));
+        assert!(out.contains("let mut v: ZVal = ZVal::Str(String::new());"));
+        assert!(out
+            .contains("__zero_win_add(\"input\", &w.clone(), None, None, None, \"i\", \"\", None, Some(&mut v));"));
+        assert!(out.contains("__zero_win_del(&w.clone(), \"b\");"));
+        assert!(out.contains("__zero_win_update_control(&w.clone(), \"b\", Some(&ZVal::Int(9)), None, None, Some(\"b2\"), None, None);"));
+        assert!(out.contains("std/lowlevel_win.rs"));
+    }
+
+    #[test]
+    fn sys_std_header_and_path_join_emit() {
+        let out = generate_for(
+            "import sys\nfn main() { a = \"x\"\nb = \"y\"\np = a +<path> b\nq = formatPath(p)\nr = taskkill(123) }",
+        );
+        assert!(out.contains("std/lowlevel_sys.rs"));
+        assert!(out.contains("std/sys.zh"));
+        assert!(out.contains("fn pathJoin(mut a: ZVal, mut b: ZVal) -> ZVal {"));
+        assert!(out.contains("return zpath_join(a.clone(), b.clone());"));
+        assert!(out.contains("pub fn zuser_path() -> ZVal {"));
+        assert!(out.contains("fn userPath() -> ZVal {"));
+        assert!(out.contains("let mut p: ZVal = zpath_join(a.clone(), b.clone());"));
+        assert!(out.contains("let mut q: ZVal = formatPath(p.clone());"));
+        assert!(out.contains("let mut r: ZVal = taskkill(ZVal::Int(123));"));
     }
 
     #[test]

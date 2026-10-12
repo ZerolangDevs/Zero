@@ -29,6 +29,12 @@ pub struct Loader {
     root_dir: PathBuf,
     /// True once `import io` has been seen: the IO API becomes available.
     pub io_imported: bool,
+    /// True once `import sys` has been seen: the `+<path>` path-join
+    /// operator becomes available.
+    pub sys_imported: bool,
+    /// True once `import win` has been seen: the program needs the Slint
+    /// backend and must be built as a Cargo project (not plain rustc).
+    pub win_imported: bool,
     /// Builtin aliases used (ordered, deduplicated).
     pub builtins: Vec<String>,
     /// Raw Rust headers, inlined in order: (display path, content).
@@ -47,6 +53,8 @@ impl Loader {
         Loader {
             root_dir: root_dir.to_path_buf(),
             io_imported: false,
+            sys_imported: false,
+            win_imported: false,
             builtins: Vec::new(),
             rust_headers: Vec::new(),
             zero_headers: Vec::new(),
@@ -207,6 +215,9 @@ impl Loader {
                 });
             }
         }
+        if name == "sys" {
+            self.sys_imported = true;
+        }
 
         // Dependencies first, then the header itself
         // (stream < stream_io < io, lowlevel_math < math).
@@ -219,7 +230,21 @@ impl Loader {
             self.load_std(dep)?;
         }
 
-        if name == "math" || name == "strings" {
+        if name == "win" {
+            // `win` is a syntax library: the parser gates `<win>` and window
+            // operations. Its runtime (`lowlevel_win`) is loaded as a
+            // dependency above, so nothing else to inline here.
+            self.win_imported = true;
+            return Ok(());
+        }
+
+        if name == "network" {
+            // `network` is a syntax library: the parser gates `net.*` calls.
+            // Its runtime (`network_stream`) is loaded as a dependency above.
+            return Ok(());
+        }
+
+        if name == "math" || name == "strings" || name == "sys" || name == "sleep" {
             // These std headers are written in Zero: parse them like a
             // `.zh` header so their functions participate in scope analysis
             // and codegen. They build on the matching raw-Rust lowlevel
@@ -239,7 +264,13 @@ impl Loader {
         // headers additionally expose callable names (`zadd`, `zlen`, ...)
         // used by their Zero wrappers.
         let content = std_source(name);
-        if name == "lowlevel_math" || name == "lowlevel_strings" {
+        if name == "lowlevel_math"
+            || name == "lowlevel_strings"
+            || name == "lowlevel_sys"
+            || name == "lowlevel_win"
+            || name == "lowlevel_sleep"
+            || name == "network_stream"
+        {
             self.register_rust_fns(&content);
         }
         self.rust_headers

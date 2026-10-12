@@ -1,0 +1,35 @@
+// range_sleep_demo.zero - 流式范围 from().to().step() + sleep 头文件
+import io
+import control
+import sleep
+
+// ---- 基本：from(0).to(5) 顾头不顾尾，step 默认 1 ----
+print("from(0).to(5):\n")
+for i in from(0).to(5):
+    print("  {}\n", i)
+
+// ---- 无序：to/from/step 顺序任意 ----
+print("step(2).from(1).to(9):\n")
+for i in step(2).from(1).to(9):
+    print("  {}\n", i)
+
+// ---- 省略 from（默认 0）----
+print("to(3) (from defaults 0):\n")
+for i in to(3):
+    print("  {}\n", i)
+
+// ---- 负数步长（倒序）----
+print("from(5).to(0).step(-2):\n")
+for i in from(5).to(0).step(-2):
+    print("  {}\n", i)
+
+// ---- 求和验证 ----
+sum = 0
+for i in from(1).to(101).step(2):
+    sum = sum + i
+print("1+3+...+99 = {}\n", sum)
+
+// ---- sleep ----
+print("sleep 100ms...\n")
+sleep(100)
+print("awake\n")

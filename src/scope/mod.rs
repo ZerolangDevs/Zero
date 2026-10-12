@@ -7,7 +7,7 @@
 //! against the scope chain. Calls must target a builtin, an imported `io`
 //! function, or a known user function with a matching arity.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::diag::{CompileError, Span};
@@ -29,17 +29,27 @@ pub struct ScopeAnalyzer<'a> {
     /// True when `import io` is active: `print`/`input_s`/`input`/`set_stream`
     /// are then treated as the standard IO API.
     io_imported: bool,
+    /// True when `import sys` is active: the `+<path>` path-join operator
+    /// is then available.
+    sys_imported: bool,
     scopes: Vec<Scope>,
     /// Declared return type of the function being analysed (None outside).
     current_ret: Option<ZType>,
     /// Nesting depth of `while` / `for` / `each` loops, for validating
     /// `break` / `continue`.
     loop_depth: usize,
+    /// Variables created with `name<win> = { ... }`.
+    win_vars: HashSet<String>,
     file: String,
 }
 
 impl<'a> ScopeAnalyzer<'a> {
-    pub fn new(functions: &'a HashMap<String, FnInfo>, file: &str, io_imported: bool) -> Self {
+    pub fn new(
+        functions: &'a HashMap<String, FnInfo>,
+        file: &str,
+        io_imported: bool,
+        sys_imported: bool,
+    ) -> Self {
         let mut scopes = Vec::new();
         scopes.push(Scope {
             symbols: HashMap::new(),
@@ -47,9 +57,11 @@ impl<'a> ScopeAnalyzer<'a> {
         ScopeAnalyzer {
             functions,
             io_imported,
+            sys_imported,
             scopes,
             current_ret: None,
             loop_depth: 0,
+            win_vars: HashSet::new(),
             file: file.to_string(),
         }
     }
@@ -192,6 +204,21 @@ impl<'a> ScopeAnalyzer<'a> {
                         self.analyze_block(ebody, None)?;
                     }
                 }
+                Stmt::WinCreate { name, args, span } => {
+                    self.win_vars.insert(name.clone());
+                    self.current_mut().symbols.insert(name.clone(), false);
+                    for (arg_name, value) in args {
+                        match arg_name.as_str() {
+                            "x" | "y" | "size" => self.analyze_expr(value)?,
+                            other => {
+                                return Err(self.err(
+                                    format!("unknown window option '{other}' (x, y, size)"),
+                                    *span,
+                                ));
+                            }
+                        }
+                    }
+                }
                 Stmt::Break { span } => {
                     if self.loop_depth == 0 {
                         return Err(self.err("'break' outside of a loop", *span));
@@ -213,11 +240,13 @@ impl<'a> ScopeAnalyzer<'a> {
                     var,
                     start,
                     end,
+                    step,
                     body,
                     ..
                 } => {
                     self.analyze_expr(start)?;
                     self.analyze_expr(end)?;
+                    self.analyze_expr(step)?;
                     self.loop_depth += 1;
                     let result = self.analyze_block(body, Some(var));
                     self.loop_depth -= 1;
@@ -298,7 +327,37 @@ impl<'a> ScopeAnalyzer<'a> {
                 }
                 self.check_call(callee, args, span)
             }
-            Expr::Binary { lhs, rhs, .. } => {
+            Expr::NetCall { member, args, span } => {
+                let ok = match member.as_str() {
+                    "connect" | "post" | "put" | "download" => args.len() == 2,
+                    "send" | "get" | "delete" => args.len() == 1,
+                    "recv" | "close" => args.is_empty(),
+                    "httpRequest" => args.len() == 3,
+                    other => {
+                        return Err(self.err(format!("unknown net method '{other}'"), *span));
+                    }
+                };
+                if !ok {
+                    return Err(self.err(
+                        format!("net.{member} takes a fixed number of arguments"),
+                        *span,
+                    ));
+                }
+                for a in args {
+                    self.analyze_expr(a)?;
+                }
+                Ok(())
+            }
+            Expr::WinOp {
+                win,
+                path,
+                args,
+                span,
+            } => self.check_win_op(win, path, args, span),
+            Expr::Binary { op, lhs, rhs, span } => {
+                if *op == BinOp::PathJoin && !self.sys_imported {
+                    return Err(self.err("'+<path>' requires 'import sys'", *span));
+                }
                 self.analyze_expr(lhs)?;
                 self.analyze_expr(rhs)
             }
@@ -404,6 +463,114 @@ impl<'a> ScopeAnalyzer<'a> {
         Ok(())
     }
 
+    /// Validate a window operation and its named arguments.
+    fn check_win_op(
+        &mut self,
+        win: &str,
+        path: &[String],
+        args: &[(String, Expr)],
+        span: &Span,
+    ) -> Result<(), CompileError> {
+        if !self.win_vars.contains(win) {
+            return Err(self.err(
+                format!("'{win}' is not a window (create it with '{win}<win> = {{ ... }}')"),
+                *span,
+            ));
+        }
+        let segs: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
+        let (kind, ctrl_kind) = match segs.as_slice() {
+            ["update"] => ("update", None),
+            ["add", k]
+                if matches!(
+                    *k,
+                    "button"
+                        | "text"
+                        | "select"
+                        | "selects"
+                        | "input"
+                        | "switch"
+                        | "slider"
+                        | "checkbox"
+                        | "spinbox"
+                        | "textedit"
+                        | "progress"
+                        | "group"
+                ) =>
+            {
+                ("add", Some(*k))
+            }
+            [_, op] if *op == "del" || *op == "update" => ("update_control", None),
+            _ => {
+                return Err(self.err(
+                    "unknown window operation (update, add.<control>, <id>.del, <id>.update)",
+                    *span,
+                ));
+            }
+        };
+        for (arg_name, value) in args {
+            match arg_name.as_str() {
+                "x" | "y" | "size" | "items" => self.analyze_expr(value)?,
+                "id" => {
+                    if !matches!(value, Expr::Str(..)) {
+                        return Err(self.err("'id' must be a string literal", *span));
+                    }
+                }
+                "onclick" => {
+                    let Expr::Ident(fname, _) = value else {
+                        return Err(self.err("'onclick' must be a function name", *span));
+                    };
+                    match self.functions.get(fname) {
+                        Some(info) => {
+                            if let Some(k) = info.arity {
+                                if k != 0 {
+                                    return Err(self.err(
+                                        format!(
+                                            "'onclick' function '{fname}' must take no arguments"
+                                        ),
+                                        *span,
+                                    ));
+                                }
+                            }
+                        }
+                        None => {
+                            return Err(self.err(
+                                format!("unknown function '{fname}' used as onclick"),
+                                *span,
+                            ));
+                        }
+                    }
+                }
+                "into" => {
+                    if kind == "update" {
+                        return Err(self.err("'into' is only valid on controls", *span));
+                    }
+                    if kind == "add" && !matches!(ctrl_kind, Some("input") | Some("textedit")) {
+                        return Err(self.err(
+                            format!("'into' is only valid for input controls, not '{ctrl_kind:?}'"),
+                            *span,
+                        ));
+                    }
+                    let Expr::Ident(v, _) = value else {
+                        return Err(self.err("'into' must be a variable name", *span));
+                    };
+                    // `into=(var)` declares/updates the target variable.
+                    self.current_mut().symbols.insert(v.clone(), false);
+                }
+                other => {
+                    return Err(self.err(format!("unknown argument '{other}'"), *span));
+                }
+            }
+        }
+        if kind == "add" && self.named_arg(args, "id").is_none() {
+            return Err(self.err("'id' is required when adding a control", *span));
+        }
+        Ok(())
+    }
+
+    fn named_arg<'e>(&self, args: &'e [(String, Expr)], name: &str) -> Option<&'e Expr> {
+        args.iter().find(|(n, _)| n == name).map(|(_, e)| e)
+    }
+
     fn current_mut(&mut self) -> &mut Scope {
         self.scopes.last_mut().expect("scope stack never empty")
     }
@@ -450,7 +617,53 @@ mod tests {
     fn analyze(src: &str, io_imported: bool) -> Result<(), CompileError> {
         let prog = parse(src, "test.zero").unwrap();
         let fns = functions_of(&prog);
-        ScopeAnalyzer::new(&fns, "test.zero", io_imported).analyze_program(&prog)
+        ScopeAnalyzer::new(&fns, "test.zero", io_imported, false).analyze_program(&prog)
+    }
+
+    #[test]
+    fn window_ops_require_win_variable() {
+        let err = analyze("import win\nfn main() { w.update() }", false).unwrap_err();
+        assert!(err.message.contains("is not a window"));
+    }
+
+    #[test]
+    fn window_create_and_ops_analyze() {
+        let src = "import win\nfn cb() { return 1 }\nfn main() { w<win> = {x=10}\nw.update()\nw.add.button(id=\"b\", onclick=cb)\nw.b.del()\nw.b.update(x=5)\nw.add.input(id=\"i\", into=(v)) }";
+        let prog = parse(src, "test.zero").unwrap();
+        let fns = functions_of(&prog);
+        ScopeAnalyzer::new(&fns, "test.zero", false, false)
+            .analyze_program(&prog)
+            .unwrap();
+    }
+
+    #[test]
+    fn window_onclick_must_be_zero_arg_fn() {
+        let src = "import win\nfn cb(a) { return a }\nfn main() { w<win> = {}\nw.add.button(id=\"b\", onclick=cb) }";
+        let prog = parse(src, "test.zero").unwrap();
+        let fns = functions_of(&prog);
+        let err = ScopeAnalyzer::new(&fns, "test.zero", false, false)
+            .analyze_program(&prog)
+            .unwrap_err();
+        assert!(err.message.contains("must take no arguments"));
+    }
+
+    #[test]
+    fn path_join_requires_sys_import() {
+        let err = analyze("fn main() { p = a +<path> b }", false).unwrap_err();
+        assert!(err.message.contains("requires 'import sys'"));
+    }
+
+    #[test]
+    fn path_join_works_when_sys_imported() {
+        let prog = parse(
+            "import sys\nfn main() { a = \"x\"\nb = \"y\"\np = a +<path> b }",
+            "test.zero",
+        )
+        .unwrap();
+        let fns = functions_of(&prog);
+        ScopeAnalyzer::new(&fns, "test.zero", false, true)
+            .analyze_program(&prog)
+            .unwrap();
     }
 
     #[test]

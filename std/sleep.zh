@@ -1,0 +1,6 @@
+// sleep.zh —— 睡眠标准库（Zero 实现，依赖 lowlevel_sleep）
+// 仅提供 sleep(ms)：休眠指定毫秒数。
+
+import lowlevel_sleep
+
+func sleep(ms): zsleep(ms)
