@@ -1,0 +1,29 @@
+version: 2.1
+
+jobs:
+  build:
+    docker:
+      - image: cimg/rust:1.83.0
+    steps:
+      - checkout
+
+      - restore_cache:
+          keys:
+            - rust-cargo-v1-{{ checksum "Cargo.lock" }}
+            - rust-cargo-v1-
+
+      - run:
+          name: Build
+          command: cargo build --release
+
+      - save_cache:
+          key: rust-cargo-v1-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/registry
+            - ~/.cargo/git
+            - ./target
+
+workflows:
+  ci:
+    jobs:
+      - build
