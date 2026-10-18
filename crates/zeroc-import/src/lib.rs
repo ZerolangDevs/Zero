@@ -26,7 +26,7 @@ use crate::scope::{FnInfo, IO_FUNCTIONS};
 mod stdlib;
 
 use stdlib::{builtin_use, std_source};
-pub use stdlib::{BUILTIN_IMPORTS, STD_DEPS};
+pub use stdlib::{std_asset, BUILTIN_IMPORTS, STD_DEPS};
 
 pub struct Loader {
     root_dir: PathBuf,
@@ -38,6 +38,9 @@ pub struct Loader {
     /// True once `import win` has been seen: the program needs the Slint
     /// backend and must be built as a Cargo project (not plain rustc).
     pub win_imported: bool,
+    /// True once `import network` has been seen: the program uses the
+    /// HTTP client (ureq) and must be built as a Cargo project.
+    pub net_imported: bool,
     /// Builtin aliases used (ordered, deduplicated).
     pub builtins: Vec<String>,
     /// Raw Rust headers, inlined in order: (display path, content).
@@ -58,6 +61,7 @@ impl Loader {
             io_imported: false,
             sys_imported: false,
             win_imported: false,
+            net_imported: false,
             builtins: Vec::new(),
             rust_headers: Vec::new(),
             zero_headers: Vec::new(),
@@ -221,6 +225,9 @@ impl Loader {
         if name == "sys" {
             self.sys_imported = true;
         }
+        if name == "network" || name == "network_stream" {
+            self.net_imported = true;
+        }
 
         // Dependencies first, then the header itself
         // (stream < stream_io < io, lowlevel_math < math).
@@ -244,6 +251,7 @@ impl Loader {
         if name == "network" {
             // `network` is a syntax library: the parser gates `net.*` calls.
             // Its runtime (`network_stream`) is loaded as a dependency above.
+            self.net_imported = true;
             return Ok(());
         }
 

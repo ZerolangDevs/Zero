@@ -40,6 +40,13 @@ EXAMPLES:
     zero hello.zero -wasm -o hello.wasm
 ";
 
+/// Compiled output: generated Rust code plus build requirements.
+struct Compiled {
+    code: String,
+    uses_win: bool,
+    uses_net: bool,
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
 
@@ -94,13 +101,27 @@ fn main() -> ExitCode {
     };
 
     match compile(&input) {
-        Ok((code, uses_win)) => {
+        Ok(c) => {
             if mode_rust {
-                emit_rust(&code, output.as_deref(), uses_win)
+                emit_rust(&c.code, output.as_deref(), c.uses_win, c.uses_net)
             } else if mode_wasm {
-                build_wasm(&input, output.as_deref(), &code, uses_win, opt_level)
+                build_wasm(
+                    &input,
+                    output.as_deref(),
+                    &c.code,
+                    c.uses_win,
+                    c.uses_net,
+                    opt_level,
+                )
             } else {
-                build_native(&input, output.as_deref(), &code, uses_win, opt_level)
+                build_native(
+                    &input,
+                    output.as_deref(),
+                    &c.code,
+                    c.uses_win,
+                    c.uses_net,
+                    opt_level,
+                )
             }
         }
         Err(err) => {
@@ -111,7 +132,7 @@ fn main() -> ExitCode {
 }
 
 /// `-rust`: emit Rust source only (stdout, or `-o` file).
-fn emit_rust(code: &str, output: Option<&Path>, uses_win: bool) -> ExitCode {
+fn emit_rust(code: &str, output: Option<&Path>, uses_win: bool, uses_net: bool) -> ExitCode {
     match output {
         Some(out) => {
             if let Err(e) = std::fs::write(out, code) {
@@ -122,6 +143,11 @@ fn emit_rust(code: &str, output: Option<&Path>, uses_win: bool) -> ExitCode {
             if uses_win {
                 eprintln!(
                     "note: this program uses `win`; compile it as a Cargo project with Slint"
+                );
+            }
+            if uses_net {
+                eprintln!(
+                    "note: this program uses `network`; compile it as a Cargo project with `ureq`"
                 );
             }
             ExitCode::SUCCESS
@@ -157,6 +183,7 @@ fn build_native(
     output: Option<&Path>,
     code: &str,
     uses_win: bool,
+    uses_net: bool,
     opt: u8,
 ) -> ExitCode {
     let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("out");
@@ -178,8 +205,22 @@ fn build_native(
             })
         }
     };
-    let result = if uses_win {
-        build_with_cargo(&rust_path, &exe_path, opt)
+    let result = if uses_win || uses_net {
+        // 用到 `win`（Slint）或 `network`（ureq）的程序需要 Cargo 工程。
+        let mut deps: Vec<(&str, &str)> = Vec::new();
+        if uses_win {
+            deps.push((
+                "slint",
+                "{ version = \"1\", features = [\"backend-winit\", \"renderer-femtovg\"] }",
+            ));
+        }
+        if uses_net {
+            deps.push((
+                "ureq",
+                "{ version = \"=2.10.1\", default-features = false, features = [\"tls\", \"gzip\"] }",
+            ));
+        }
+        build_with_cargo(&rust_path, &exe_path, opt, &deps)
     } else {
         build_with_rustc(&rust_path, &exe_path, opt)
     };
@@ -195,12 +236,14 @@ fn build_native(
     }
 }
 
-/// `-wasm`: generate Rust and compile it to WebAssembly.
+/// `-wasm`: generate Rust, compile it to WebAssembly, and emit the
+/// `<stem>.js` runtime glue (console + net HTTP bridge).
 fn build_wasm(
     input: &Path,
     output: Option<&Path>,
     code: &str,
     uses_win: bool,
+    _uses_net: bool,
     opt: u8,
 ) -> ExitCode {
     if uses_win {
@@ -232,6 +275,7 @@ fn build_wasm(
     match status {
         Ok(true) => {
             println!("✓ built {}", wasm_path.display());
+            emit_wasm_glue(&wasm_path);
             ExitCode::SUCCESS
         }
         _ => {
@@ -243,11 +287,43 @@ fn build_wasm(
     }
 }
 
-/// Build a program that uses `win` as a Cargo project with the Slint
-/// dependency (Material Design via SLINT_STYLE=material). The generated
-/// code is copied into `<stem>_app/src/main.rs`; the built executable is
-/// copied to `exe_path`.
-fn build_with_cargo(rust_path: &Path, exe_path: &Path, opt: u8) -> Result<(), String> {
+/// Write the `<stem>.js` runtime glue next to the wasm module (console
+/// output + `net.*` HTTP via the JS host).
+fn emit_wasm_glue(wasm_path: &Path) {
+    let template = match import::std_asset("wasm_runtime.js") {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("warning: {e}");
+            return;
+        }
+    };
+    let stem = wasm_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("out");
+    let glue_path = wasm_path.with_extension("js");
+    let glue = template.replace("<STEM>", stem);
+    if let Err(e) = std::fs::write(&glue_path, glue) {
+        eprintln!("warning: cannot write '{}': {e}", glue_path.display());
+        return;
+    }
+    println!("✓ built {} (runtime glue)", glue_path.display());
+    println!(
+        "note: run with `node {}` or load {} in a browser",
+        glue_path.display(),
+        wasm_path.display()
+    );
+}
+
+/// Build a program that needs external crates (`win` -> Slint, `network` ->
+/// ureq) as a Cargo project. The generated code is copied into
+/// `<stem>_app/src/main.rs`; the built executable is copied to `exe_path`.
+fn build_with_cargo(
+    rust_path: &Path,
+    exe_path: &Path,
+    opt: u8,
+    deps: &[(&str, &str)],
+) -> Result<(), String> {
     let stem = rust_path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -260,8 +336,13 @@ fn build_with_cargo(rust_path: &Path, exe_path: &Path, opt: u8) -> Result<(), St
     std::fs::create_dir_all(app_dir.join(".cargo")).map_err(|e| e.to_string())?;
     std::fs::copy(rust_path, &main_rs).map_err(|e| format!("cannot copy generated code: {e}"))?;
 
+    let deps_toml: Vec<String> = deps
+        .iter()
+        .map(|(name, spec)| format!("{name} = {spec}"))
+        .collect();
     let cargo_toml = format!(
-        "[package]\nname = \"{stem}_app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nslint = {{ version = \"1\", features = [\"backend-winit\", \"renderer-femtovg\"] }}\n\n[[bin]]\nname = \"{stem}_app\"\npath = \"src/main.rs\"\n\n[workspace]\n"
+        "[package]\nname = \"{stem}_app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\n{}\n\n[[bin]]\nname = \"{stem}_app\"\npath = \"src/main.rs\"\n\n[workspace]\n",
+        deps_toml.join("\n")
     );
     std::fs::write(app_dir.join("Cargo.toml"), cargo_toml).map_err(|e| e.to_string())?;
     // 共享 target 目录：同一目录下的多个窗口程序复用已编译的 Slint。
@@ -341,7 +422,7 @@ fn exe_suffix() -> &'static str {
 }
 
 /// Full compile pipeline: parse -> load headers -> scope analysis -> codegen.
-fn compile(input: &Path) -> Result<(String, bool), CompileError> {
+fn compile(input: &Path) -> Result<Compiled, CompileError> {
     let file = input.display().to_string();
     let src = std::fs::read_to_string(input).map_err(|e| {
         CompileError::new(
@@ -399,11 +480,11 @@ fn compile(input: &Path) -> Result<(String, bool), CompileError> {
     }
     let int_fast = scope::int_fast::analyze(&all_fns, fns);
 
-    let uses_win = loader.win_imported;
-    Ok((
-        codegen::generate(&prog, &loader, &file, &int_fast),
-        uses_win,
-    ))
+    Ok(Compiled {
+        code: codegen::generate(&prog, &loader, &file, &int_fast),
+        uses_win: loader.win_imported,
+        uses_net: loader.net_imported,
+    })
 }
 
 /// Render an error; uses the file on disk for the source snippet.

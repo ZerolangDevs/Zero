@@ -1105,6 +1105,10 @@ mod tests {
         assert!(out.contains("net_connect(ZVal::Str(\"127.0.0.1\".into()), ZVal::Int(9000));"));
         assert!(out.contains("http_post(ZVal::Str(\"u\".into()), ZVal::Str(\"d\".into()));"));
         assert!(out.contains("http_download(ZVal::Str(\"u\".into()), ZVal::Str(\"f\".into()));"));
+        // native 走 ureq，wasm 走 JS 桥接：runtime 里两个分支都要在。
+        assert!(out.contains("zw_native"));
+        assert!(out.contains("zw_wasm"));
+        assert!(out.contains("wasm_import_module = \"zero\""));
     }
 
     #[test]

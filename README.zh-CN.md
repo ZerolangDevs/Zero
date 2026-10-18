@@ -61,7 +61,7 @@ Zero 是一门小型、动态、**默认无类型**的语言，它编译成 Rust
   `clamp`、`pow`、`factorial`、`gcd`、`lcm`、`is_even`、`is_odd`、`digit_sum`，以及浮点辅助函数 `sqrt` / `floor` / `ceil` / `round`。
 - **标准库 `strings`** —— 包含两个头文件：`lowlevel_strings`（原生 Rust：`zlen` / `zupper` / `zlower` / `ztrim` / `zcontains` / ……）和 `strings`（用 Zero 编写）提供 `len`、`upper`、`lower`、`trim`、`contains`、`startswith`、`endswith`、`char_at`、`substr`、`replace`、`repeat`、`reverse`、`index_of`、`count`、`is_empty`，以及 `capitalize`、`count_words`、`is_palindrome`、`truncate`、`remove_spaces`。
 - **标准库 `sys`** —— 操作系统交互（`import sys`）：`path1 +<path> path2` 路径拼接运算符、`userPath()`（用户根目录）、`formatPath(path)` 路径规范化、`taskkill(target)` 结束进程（按映像名或 PID），构建于 `sys -> lowlevel_sys` 之上。
-- **标准库 `network`** —— 网络（`import network`），全部通过 `net.*` 命名空间：裸 TCP `net.connect(host, port)` / `net.send(data)` / `net.recv()` / `net.close()`，以及 HTTP 客户端（仅 `http://`）：`net.get(url)`、`net.post(url, data)`、`net.put(url, data)`、`net.delete(url)`、`net.download(url, file)`、通用 `net.httpRequest(method, url, data)`。构建于 `network -> network_stream -> stream` 之上，可与 `io.streaming` 配合管道数据。
+- **标准库 `network`** —— 网络（`import network`），全部通过 `net.*` 命名空间：裸 TCP `net.connect(host, port)` / `net.send(data)` / `net.recv()` / `net.close()`，以及跨平台 HTTP 客户端（支持 `http://` 与 `https://`，TLS 基于 rustls / `ureq`）：`net.get(url)`、`net.post(url, data)`、`net.put(url, data)`、`net.delete(url)`、`net.download(url, file)`、通用 `net.httpRequest(method, url, data)`。构建于 `network -> network_stream -> stream` 之上，可与 `io.streaming` 配合管道数据。使用 `network` 的程序会作为带 `ureq` 依赖的 Cargo 工程来编译（Windows / Linux / macOS 通用）。
 - **窗口库 `win`** —— 原生 GUI（`import win`，跨平台）：基于 **Slint** 并使用 **Material Design** 样式。用 `name<win> = { x=..., y=..., size=... }` 新建窗口，`win.update()` 驱动窗口，控件管理用 `win.add.button/text/input/select/selects/switch/slider/checkbox/spinbox/textedit/progress/group(...)`（命名参数 `x` / `y` / `size` / `id` / `items` / `onclick`，输入框还有 `into=(var)`）以及 `win.<id>.del()` / `win.<id>.update(...)`。`zeroc --build` 会把这类程序作为带 Slint 的 Cargo 工程来编译。
 - **控制流（`import control`）** —— `if` / `else_if` / `else`、`while`、`for x in a..b`、`each x in ...`、`switch`、`try` / `catch`，以及循环内的 `break` / `continue`。范围也可以写成流式 `for i in from(x).to(y).step(s)` —— 调用顺序任意，`from` 默认 0、`step` 默认 1，顾头不顾尾。控制体以 `:` 引导，支持 `{ ... }` 块、单语句、或**不用花括号的缩进块**。
 - **标准库 `sleep`** —— `import sleep` 提供 `sleep(ms)`，按毫秒暂停。
@@ -168,7 +168,7 @@ cargo run -- examples\hello.zero -o3   # 完全优化（LTO）
 - `zero <input.zero>` —— 默认：编译并构建当前平台的原生可执行文件（普通程序用 `rustc`；`win` 程序用含 Slint 的 Cargo 工程）。
 - 优化档位（默认 `-o2`）：`-o1` 无优化（构建最快）；`-o2` 高性价比（`opt-level=2` + strip / win 用 release + thin LTO）；`-o3` 完全优化（`opt-level=3` + `lto=fat` + 单 codegen 单元）。
 - `zero <input.zero> -rust [-o out.rs]` —— 只生成 Rust 源码（无 `-o` 时输出到标准输出）。
-- `zero <input.zero> -wasm [-o out.wasm]` —— 生成 Rust 并编译为 WebAssembly（可能需要 `rustup target add wasm32-unknown-unknown`；wasm 内 IO 为空操作）。
+- `zero <input.zero> -wasm [-o out.wasm]` —— 生成 Rust、编译为 WebAssembly，并输出 `<out>.js` 运行时胶水（可能需要 `rustup target add wasm32-unknown-unknown`）。胶水把 `print` 桥接到宿主控制台、把 `net.*` HTTP 桥接到 fetch/XHR，因此 wasm 也支持 `network` 程序。运行方式：`node out.js` 或在浏览器中加载 `out.wasm`。
 - 如果默认链接器缺失（例如没有 MSVC `link.exe`），会自动改用 Rust 工具链自带的 `rust-lld` 链接器重试。
 - Windows 说明：本仓库的 `.cargo/config.toml` 使用 Rust 自带的 `rust-lld` 链接器，因此即使没有 MSVC `link.exe` 也能构建。
 
@@ -198,7 +198,7 @@ std/
   lowlevel_win.rs    底层窗口后端（Slint + Material Design，Rust）
   lowlevel_sleep.rs  底层睡眠：原生 Rust
   sleep.zh           睡眠库（Zero 实现）：sleep(ms)
-  network_stream.rs  底层 TCP 网络：原生 Rust
+  network_stream.rs  底层网络：TCP + HTTP/HTTPS（ureq + rustls）
   network.zh         网络库（Zero 实现）：connect / send / recv / close
 examples/            可运行示例（hello_zero、func_typed、control_demo……）
 ```

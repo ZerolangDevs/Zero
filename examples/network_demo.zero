@@ -23,7 +23,7 @@ print("net.httpRequest PATCH: {}\n", r4)
 chunk = net.get("http://127.0.0.1:9100/chunk")
 print("net.get /chunk: {}\n", chunk)
 
-// HTTPS（系统 TLS / WinHTTP）
+// HTTPS（跨平台 TLS：ureq / rustls）
 h = net.get("https://example.com")
 print("net.get https ok: {}\n", h != NULL)
 

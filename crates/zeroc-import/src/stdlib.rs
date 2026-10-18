@@ -76,6 +76,13 @@ fn std_dir() -> String {
     "std".to_string()
 }
 
+/// Read a raw standard library asset (e.g. `wasm_runtime.js`) by file name.
+pub fn std_asset(file: &str) -> Result<String, String> {
+    let path = std::path::Path::new(&std_dir()).join(file);
+    std::fs::read_to_string(&path)
+        .map_err(|e| format!("cannot read std asset '{}': {e}", path.display()))
+}
+
 /// Read a standard library header source from disk.
 pub(crate) fn std_source(name: &str) -> Result<String, String> {
     let file = STD_FILES

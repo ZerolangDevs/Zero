@@ -3,6 +3,16 @@
 // stream_io、io、network_stream 都建立在它之上；流桥接（streaming）也在此实现。
 // 注意：本文件被平铺进生成的 crate，因此全部使用完整路径，避免 `use` 冲突。
 
+/// wasm32：把 Shell 输出桥接到 JS 宿主控制台（console.log）。
+/// 由编译器生成的 `<stem>.js` 胶水提供 `zero` 导入模块。
+#[cfg(target_arch = "wasm32")]
+mod zw_wasm_console {
+    #[link(wasm_import_module = "zero")]
+    extern "C" {
+        pub fn zero_console_log(ptr: *const u8, len: usize);
+    }
+}
+
 /// 流类型：终端（shell）、文件（file）或网络（net）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ZStreamKind {
@@ -68,8 +78,15 @@ impl ZStream {
     pub fn write(&mut self, text: &str) {
         match self.kind {
             ZStreamKind::Shell => {
-                print!("{text}");
-                let _ = std::io::Write::flush(&mut std::io::stdout());
+                #[cfg(target_arch = "wasm32")]
+                unsafe {
+                    zw_wasm_console::zero_console_log(text.as_ptr(), text.len());
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    print!("{text}");
+                    let _ = std::io::Write::flush(&mut std::io::stdout());
+                }
             }
             ZStreamKind::File => {
                 if let Some(f) = &mut self.writer {

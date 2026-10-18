@@ -93,12 +93,14 @@ the OS whenever you need it.
   name or PID), built on `sys -> lowlevel_sys`.
 - **Standard library `network`** — networking (`import network`), all
   behind the `net.*` namespace: raw TCP `net.connect(host, port)` /
-  `net.send(data)` / `net.recv()` / `net.close()`, plus an HTTP client
-  (`http://` only): `net.get(url)`, `net.post(url, data)`,
-  `net.put(url, data)`, `net.delete(url)`, `net.download(url, file)`, and
-  the generic `net.httpRequest(method, url, data)`. Built on
+  `net.send(data)` / `net.recv()` / `net.close()`, plus a cross-platform
+  HTTP client supporting both `http://` and `https://` (TLS via rustls /
+  `ureq`): `net.get(url)`, `net.post(url, data)`, `net.put(url, data)`,
+  `net.delete(url)`, `net.download(url, file)`, and the generic
+  `net.httpRequest(method, url, data)`. Built on
   `network -> network_stream -> stream`; combine with `io.streaming` to pipe
-  data to/from files or the terminal.
+  data to/from files or the terminal. Programs using `network` are compiled
+  as a Cargo project with the `ureq` dependency (Windows / Linux / macOS).
 - **Window library `win`** — native GUI (`import win`, cross-platform):
   built on **Slint** with the **Material Design** style. Create a window
   with `name<win> = { x=..., y=..., size=... }`, drive it with
@@ -237,9 +239,11 @@ cargo run -- examples\hello.zero -o3   # full optimization (LTO)
     unit).
 - `zero <input.zero> -rust [-o out.rs]` — only generate Rust source
   (stdout if no `-o`).
-- `zero <input.zero> -wasm [-o out.wasm]` — generate Rust and compile it to
-  WebAssembly (`rustup target add wasm32-unknown-unknown` may be needed;
-  IO is a no-op inside wasm).
+- `zero <input.zero> -wasm [-o out.wasm]` — generate Rust, compile it to
+  WebAssembly, and emit an `<out>.js` runtime glue (`rustup target add
+  wasm32-unknown-unknown` may be needed). The glue bridges `print` to the
+  host console and `net.*` HTTP to `fetch`/XHR, so `network` programs work
+  in wasm too. Run with `node out.js` or load `out.wasm` in a browser.
 - If the default linker is missing (e.g. no MSVC `link.exe`), it retries
   with the bundled `rust-lld`.
 - Windows note: this repo's `.cargo/config.toml` uses Rust's bundled
@@ -271,7 +275,7 @@ std/
   lowlevel_win.rs    low-level window backend (Slint + Material Design, Rust)
   lowlevel_sleep.rs  low-level sleep in raw Rust
   sleep.zh           sleep library in Zero: sleep(ms)
-  network_stream.rs  low-level TCP networking in raw Rust
+  network_stream.rs  low-level networking: raw TCP + HTTP/HTTPS (ureq/rustls)
   network.zh         network library in Zero: connect / send / recv / close
 examples/            runnable examples (hello_zero, func_typed, control_demo, ...)
 ```
