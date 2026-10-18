@@ -23,6 +23,10 @@ print("net.httpRequest PATCH: {}\n", r4)
 chunk = net.get("http://127.0.0.1:9100/chunk")
 print("net.get /chunk: {}\n", chunk)
 
+// HTTPS（系统 TLS / WinHTTP）
+h = net.get("https://example.com")
+print("net.get https ok: {}\n", h != NULL)
+
 // 下载到文件
 ok = net.download("http://127.0.0.1:9100/file", "dl.txt")
 print("net.download: {}\n", ok)

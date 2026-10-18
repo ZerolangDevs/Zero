@@ -2,12 +2,20 @@
 name = "zeroc"
 version = "0.3.0"
 edition = "2021"
-description = "Zero compiler - a small language that compiles to Rust"
-license = "MPL-2.0"
+
+[dependencies]
+zeroc-ast = { path = "crates/zeroc-ast" }
+zeroc-codegen = { path = "crates/zeroc-codegen" }
+zeroc-diag = { path = "crates/zeroc-diag" }
+zeroc-import = { path = "crates/zeroc-import" }
+zeroc-lexer = { path = "crates/zeroc-lexer" }
+zeroc-parser = { path = "crates/zeroc-parser" }
+zeroc-scope = { path = "crates/zeroc-scope" }
 
 [[bin]]
-name = "zeroc"
+name = "zero"
 path = "src/main.rs"
 
-[profile.release]
-opt-level = 3
+[workspace]
+resolver = "2"
+members = ["crates/*"]

@@ -5,3 +5,69 @@ version = 4
 [[package]]
 name = "zeroc"
 version = "0.3.0"
+dependencies = [
+ "zeroc-ast",
+ "zeroc-codegen",
+ "zeroc-diag",
+ "zeroc-import",
+ "zeroc-lexer",
+ "zeroc-parser",
+ "zeroc-scope",
+]
+
+[[package]]
+name = "zeroc-ast"
+version = "0.3.0"
+dependencies = [
+ "zeroc-diag",
+]
+
+[[package]]
+name = "zeroc-codegen"
+version = "0.3.0"
+dependencies = [
+ "zeroc-ast",
+ "zeroc-diag",
+ "zeroc-import",
+ "zeroc-parser",
+ "zeroc-scope",
+]
+
+[[package]]
+name = "zeroc-diag"
+version = "0.3.0"
+
+[[package]]
+name = "zeroc-import"
+version = "0.3.0"
+dependencies = [
+ "zeroc-ast",
+ "zeroc-diag",
+ "zeroc-parser",
+ "zeroc-scope",
+]
+
+[[package]]
+name = "zeroc-lexer"
+version = "0.3.0"
+dependencies = [
+ "zeroc-diag",
+]
+
+[[package]]
+name = "zeroc-parser"
+version = "0.3.0"
+dependencies = [
+ "zeroc-ast",
+ "zeroc-diag",
+ "zeroc-lexer",
+]
+
+[[package]]
+name = "zeroc-scope"
+version = "0.3.0"
+dependencies = [
+ "zeroc-ast",
+ "zeroc-diag",
+ "zeroc-parser",
+]

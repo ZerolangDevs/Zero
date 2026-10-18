@@ -18,6 +18,9 @@
 use crate::ast::*;
 use crate::diag::{line_col, CompileError, Span};
 use crate::lexer::{scan_raw_block, Lexer, TokKind, Token};
+pub use zeroc_ast as ast;
+pub use zeroc_diag as diag;
+pub use zeroc_lexer as lexer;
 
 pub struct Parser<'a> {
     src: &'a str,

@@ -13,10 +13,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+pub use zeroc_ast as ast;
+pub use zeroc_diag as diag;
+pub use zeroc_parser as parser;
+pub use zeroc_scope as scope;
 
 use crate::ast::{Function, Item, Program};
 use crate::diag::CompileError;
-use crate::parser;
 use crate::scope::{FnInfo, IO_FUNCTIONS};
 
 /// Standard library dependency chain: io -> stream_io -> stream.
@@ -250,7 +253,8 @@ impl Loader {
             // and codegen. They build on the matching raw-Rust lowlevel
             // header (loaded above).
             let display = format!("std/{name}.zh");
-            let header_prog = parser::parse(std_source(name), &display)?;
+            let src = std_source(name).map_err(|e| CompileError::new(e, display.clone()))?;
+            let header_prog = parser::parse(&src, &display)?;
             for f in header_prog.functions() {
                 if f.name != "main" {
                     self.register_function(f, &display)?;
@@ -263,7 +267,7 @@ impl Loader {
         // Every other std header is raw Rust: inline it. The lowlevel
         // headers additionally expose callable names (`zadd`, `zlen`, ...)
         // used by their Zero wrappers.
-        let content = std_source(name);
+        let content = std_source(name).map_err(|e| CompileError::new(e, format!("std/{name}")))?;
         if name == "lowlevel_math"
             || name == "lowlevel_strings"
             || name == "lowlevel_sys"

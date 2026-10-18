@@ -30,6 +30,7 @@ impl PartialEq for ZVal {
 }
 
 impl ZVal {
+    #[inline]
     pub fn to_rust_string(&self) -> String {
         match self {
             ZVal::Int(n) => n.to_string(),
@@ -58,6 +59,7 @@ impl ZVal {
     }
 
     /// Truthiness for `&&`, `||`, `!` and conditions.
+    #[inline]
     pub fn to_bool(&self) -> bool {
         match self {
             ZVal::Int(n) => *n != 0,
@@ -68,6 +70,7 @@ impl ZVal {
         }
     }
 
+    #[inline]
     pub fn as_int(&self) -> Option<i64> {
         match self {
             ZVal::Int(n) => Some(*n),
@@ -87,6 +90,7 @@ impl ZVal {
 
     /// `+`: numeric addition (Int stays Int unless a float is involved), or
     /// string concatenation for strings.
+    #[inline]
     pub fn add(&self, rhs: &ZVal) -> ZVal {
         match (self, rhs) {
             (ZVal::Int(a), ZVal::Int(b)) => ZVal::Int(a + b),
@@ -101,6 +105,7 @@ impl ZVal {
     }
 
     /// `-`: numeric only; non-numeric operands yield Nil.
+    #[inline]
     pub fn sub(&self, rhs: &ZVal) -> ZVal {
         match (self.as_num(), rhs.as_num()) {
             (Some((a, af)), Some((b, bf))) => {
@@ -115,6 +120,7 @@ impl ZVal {
     }
 
     /// `*`: numeric only; non-numeric operands yield Nil.
+    #[inline]
     pub fn mul(&self, rhs: &ZVal) -> ZVal {
         match (self.as_num(), rhs.as_num()) {
             (Some((a, af)), Some((b, bf))) => {
@@ -130,6 +136,7 @@ impl ZVal {
 
     /// `/`: integer division for two Ints, float division otherwise.
     /// Division by zero yields Nil.
+    #[inline]
     pub fn div(&self, rhs: &ZVal) -> ZVal {
         match (self.as_num(), rhs.as_num()) {
             (Some((_, _)), Some((b, _))) if b == 0.0 => ZVal::Nil,
@@ -146,6 +153,7 @@ impl ZVal {
 
     /// `%`: remainder; integer for two Ints, float otherwise. Zero divisor
     /// yields Nil.
+    #[inline]
     pub fn rem(&self, rhs: &ZVal) -> ZVal {
         match (self.as_num(), rhs.as_num()) {
             (Some((_, _)), Some((b, _))) if b == 0.0 => ZVal::Nil,
@@ -161,6 +169,7 @@ impl ZVal {
     }
 
     /// Unary `-`.
+    #[inline]
     pub fn neg(&self) -> ZVal {
         match self {
             ZVal::Int(n) => ZVal::Int(-n),
@@ -181,18 +190,22 @@ impl ZVal {
     }
 
     /// Ordered comparisons return `ZVal::Bool(false)` for mixed/invalid types.
+    #[inline]
     pub fn lt(&self, rhs: &ZVal) -> ZVal {
         ZVal::Bool(self.cmp_val(rhs) == Some(std::cmp::Ordering::Less))
     }
 
+    #[inline]
     pub fn le(&self, rhs: &ZVal) -> ZVal {
         ZVal::Bool(self.cmp_val(rhs).map_or(false, |o| o != std::cmp::Ordering::Greater))
     }
 
+    #[inline]
     pub fn gt(&self, rhs: &ZVal) -> ZVal {
         ZVal::Bool(self.cmp_val(rhs) == Some(std::cmp::Ordering::Greater))
     }
 
+    #[inline]
     pub fn ge(&self, rhs: &ZVal) -> ZVal {
         ZVal::Bool(self.cmp_val(rhs).map_or(false, |o| o != std::cmp::Ordering::Less))
     }

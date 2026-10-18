@@ -1,0 +1,11 @@
+[package]
+name = "zeroc-codegen"
+version = "0.3.0"
+edition = "2021"
+
+[dependencies]
+zeroc-ast = { path = "../zeroc-ast" }
+zeroc-diag = { path = "../zeroc-diag" }
+zeroc-import = { path = "../zeroc-import" }
+zeroc-parser = { path = "../zeroc-parser" }
+zeroc-scope = { path = "../zeroc-scope" }

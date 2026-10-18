@@ -8,12 +8,17 @@
 //! function, or a known user function with a matching arity.
 
 use std::collections::{HashMap, HashSet};
+pub use zeroc_ast as ast;
+pub use zeroc_diag as diag;
+pub use zeroc_parser as parser;
 
 use crate::ast::*;
 use crate::diag::{CompileError, Span};
 
 /// Builtin function names understood by the compiler.
 mod callable;
+
+pub mod int_fast;
 
 pub use callable::{FnInfo, BUILTIN_CALL_RUST, BUILTIN_CALL_SYS, IO_FUNCTIONS};
 

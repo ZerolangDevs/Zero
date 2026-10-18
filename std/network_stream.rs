@@ -96,11 +96,15 @@ fn http_decode_chunked(body: &[u8]) -> Vec<u8> {
     out
 }
 
-/// 发起一次 HTTP/1.1 请求，返回 (状态码, 正文)。仅支持 `http://`。
+/// 发起一次 HTTP/1.1 请求，返回 (状态码, 正文)。支持 `http://` 与 `https://`
+/// （HTTPS 在 Windows 上通过系统 WinHTTP/SChannel 实现 TLS）。
 fn http_request(method: &str, url: &str, data: &[u8]) -> Result<(u16, Vec<u8>), String> {
+    if url.starts_with("https://") {
+        return https_request(method, url, data);
+    }
     let rest = url
         .strip_prefix("http://")
-        .ok_or("only http:// URLs are supported (no https/tls)")?;
+        .ok_or("only http:// / https:// URLs are supported")?;
     let (authority, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),
         None => (rest, "/"),
@@ -216,5 +220,227 @@ pub fn http_download(url: ZVal, file: ZVal) -> ZVal {
             std::fs::write(file.to_rust_string(), &body).is_ok(),
         ),
         Err(_) => ZVal::Bool(false),
+    }
+}
+
+
+// ---- HTTPS：Windows WinHTTP（动态加载，系统 TLS/SChannel）----
+
+/// UTF-16 宽字符串（以 NUL 结尾）。
+fn https_wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(windows)]
+mod zw_http {
+    use std::ffi::c_void;
+
+    pub type HINTERNET = *mut c_void;
+    pub type BOOL = i32;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn LoadLibraryW(name: *const u16) -> *mut c_void;
+        fn GetProcAddress(module: *mut c_void, name: *const i8) -> *mut c_void;
+    }
+
+    type FnOpen =
+        unsafe extern "system" fn(*const u16, u32, *const u16, *const u16, u32) -> HINTERNET;
+    type FnConnect = unsafe extern "system" fn(HINTERNET, *const u16, u16, u32) -> HINTERNET;
+    type FnOpenRequest = unsafe extern "system" fn(
+        HINTERNET,
+        *const u16,
+        *const u16,
+        *const u16,
+        *const u16,
+        *mut *const u16,
+        u32,
+    ) -> HINTERNET;
+    type FnSendRequest = unsafe extern "system" fn(
+        HINTERNET,
+        *const u16,
+        u32,
+        *mut c_void,
+        u32,
+        u32,
+        usize,
+    ) -> BOOL;
+    type FnReceiveResponse = unsafe extern "system" fn(HINTERNET, *mut c_void) -> BOOL;
+    type FnQueryHeaders =
+        unsafe extern "system" fn(HINTERNET, u32, *const u16, *mut c_void, *mut u32, *mut u32) -> BOOL;
+    type FnReadData = unsafe extern "system" fn(HINTERNET, *mut c_void, u32, *mut u32) -> BOOL;
+    type FnClose = unsafe extern "system" fn(HINTERNET) -> BOOL;
+
+    pub struct WinHttp {
+        pub open: FnOpen,
+        pub connect: FnConnect,
+        pub open_request: FnOpenRequest,
+        pub send: FnSendRequest,
+        pub receive: FnReceiveResponse,
+        pub query: FnQueryHeaders,
+        pub read: FnReadData,
+        pub close: FnClose,
+    }
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    /// 动态加载 winhttp.dll 并解析函数指针（避免链接期依赖）。
+    pub fn load() -> Option<&'static WinHttp> {
+        static W: std::sync::OnceLock<Option<WinHttp>> = std::sync::OnceLock::new();
+        W.get_or_init(|| {
+            let lib = unsafe { LoadLibraryW(wide("winhttp.dll").as_ptr()) };
+            if lib.is_null() {
+                return None;
+            }
+            let sym = |name: &[u8]| unsafe { GetProcAddress(lib, name.as_ptr() as *const i8) };
+            let ptrs = [
+                sym(b"WinHttpOpen\0"),
+                sym(b"WinHttpConnect\0"),
+                sym(b"WinHttpOpenRequest\0"),
+                sym(b"WinHttpSendRequest\0"),
+                sym(b"WinHttpReceiveResponse\0"),
+                sym(b"WinHttpQueryHeaders\0"),
+                sym(b"WinHttpReadData\0"),
+                sym(b"WinHttpCloseHandle\0"),
+            ];
+            if ptrs.iter().any(|p| p.is_null()) {
+                return None; // 符号缺失：拒绝使用，避免调用空指针
+            }
+            Some(WinHttp {
+                open: unsafe { std::mem::transmute(ptrs[0]) },
+                connect: unsafe { std::mem::transmute(ptrs[1]) },
+                open_request: unsafe { std::mem::transmute(ptrs[2]) },
+                send: unsafe { std::mem::transmute(ptrs[3]) },
+                receive: unsafe { std::mem::transmute(ptrs[4]) },
+                query: unsafe { std::mem::transmute(ptrs[5]) },
+                read: unsafe { std::mem::transmute(ptrs[6]) },
+                close: unsafe { std::mem::transmute(ptrs[7]) },
+            })
+        })
+        .as_ref()
+    }
+
+    /// 通过 WinHTTP 发起一次 HTTPS 请求，返回 (状态码, 正文)。
+    pub fn request(
+        w: &WinHttp,
+        method: &str,
+        url: &str,
+        data: &[u8],
+    ) -> Result<(u16, Vec<u8>), String> {
+        let rest = url.strip_prefix("https://").ok_or("not an https url")?;
+        let (authority, path) = match rest.find('/') {
+            Some(i) => (&rest[..i], &rest[i..]),
+            None => (rest, "/"),
+        };
+        let (host, port) = match authority.rfind(':') {
+            Some(i) if authority[i + 1..].bytes().all(|b| b.is_ascii_digit()) => {
+                let port = authority[i + 1..].parse::<u16>().unwrap_or(443);
+                (&authority[..i], port)
+            }
+            _ => (authority, 443),
+        };
+        let path = if path.is_empty() { "/" } else { path };
+
+        let host_w = wide(host);
+        let path_w = wide(path);
+        let verb_w = wide(method);
+        let version_w = wide("HTTP/1.1");
+
+        unsafe {
+            // WINHTTP_ACCESS_TYPE_NO_PROXY = 1
+            let session = (w.open)(
+                wide("Zero").as_ptr(),
+                1,
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+            );
+            if session.is_null() {
+                return Err("WinHttpOpen failed".into());
+            }
+            let conn = (w.connect)(session, host_w.as_ptr(), port, 0);
+            if conn.is_null() {
+                (w.close)(session);
+                return Err("WinHttpConnect failed".into());
+            }
+            // WINHTTP_FLAG_SECURE = 0x00800000
+            let req = (w.open_request)(
+                conn,
+                verb_w.as_ptr(),
+                path_w.as_ptr(),
+                version_w.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                0x0080_0000,
+            );
+            if req.is_null() {
+                (w.close)(conn);
+                (w.close)(session);
+                return Err("WinHttpOpenRequest failed".into());
+            }
+            let sent = (w.send)(
+                req,
+                std::ptr::null(),
+                0,
+                data.as_ptr() as *mut c_void,
+                data.len() as u32,
+                data.len() as u32,
+                0,
+            );
+            if sent == 0 {
+                (w.close)(req);
+                (w.close)(conn);
+                (w.close)(session);
+                return Err("WinHttpSendRequest failed".into());
+            }
+            if (w.receive)(req, std::ptr::null_mut()) == 0 {
+                (w.close)(req);
+                (w.close)(conn);
+                (w.close)(session);
+                return Err("WinHttpReceiveResponse failed".into());
+            }
+            // WINHTTP_QUERY_STATUS_CODE = 19
+            let mut status: u32 = 0;
+            let mut len = 4u32;
+            let mut index = 0u32;
+            (w.query)(
+                req,
+                19,
+                std::ptr::null(),
+                &mut status as *mut u32 as *mut c_void,
+                &mut len,
+                &mut index,
+            );
+            let mut body = Vec::new();
+            let mut buf = [0u8; 8192];
+            loop {
+                let mut read = 0u32;
+                let r = (w.read)(req, buf.as_mut_ptr() as *mut c_void, 8192, &mut read);
+                if r == 0 || read == 0 {
+                    break;
+                }
+                body.extend_from_slice(&buf[..read as usize]);
+            }
+            (w.close)(req);
+            (w.close)(conn);
+            (w.close)(session);
+            Ok((status as u16, body))
+        }
+    }
+}
+
+/// 发起 HTTPS 请求（Windows 上经 WinHTTP 系统 TLS；其他平台不支持）。
+fn https_request(method: &str, url: &str, data: &[u8]) -> Result<(u16, Vec<u8>), String> {
+    #[cfg(windows)]
+    {
+        let w = zw_http::load().ok_or("cannot load winhttp.dll")?;
+        zw_http::request(w, method, url, data)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (method, url, data);
+        Err("https requires Windows (winhttp)".to_string())
     }
 }

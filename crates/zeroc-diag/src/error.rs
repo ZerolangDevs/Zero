@@ -1,6 +1,6 @@
 //! Compiler error type and source rendering.
 
-use crate::diag::Span;
+use crate::Span;
 
 /// A compiler error carrying an optional source span.
 #[derive(Debug)]

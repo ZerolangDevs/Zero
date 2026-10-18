@@ -1,5 +1,6 @@
 //! Abstract syntax tree for the Zero language (v0.2).
 
+pub use zeroc_diag as diag;
 mod expr;
 mod stmt;
 

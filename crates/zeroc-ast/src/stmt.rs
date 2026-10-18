@@ -1,7 +1,7 @@
 //! Statements in the Zero language.
 
-use crate::ast::{Block, Expr, ScopeKind};
 use crate::diag::Span;
+use crate::{Block, Expr, ScopeKind};
 
 #[derive(Debug, Clone)]
 pub enum Stmt {

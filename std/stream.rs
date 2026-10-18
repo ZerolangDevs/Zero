@@ -214,6 +214,9 @@ fn bridge_endpoint(name: &str, read: bool) -> Option<BridgeEndpoint> {
                 Some(s) => s.try_clone().ok()?,
                 None => zstream_global().lock().unwrap().net.as_ref()?.try_clone().ok()?,
             };
+            // 短读超时：让桥接循环能周期性检查停止标志，
+            // 否则阻塞中的读会让 stop_streaming 失效。
+            let _ = n.set_read_timeout(Some(std::time::Duration::from_millis(100)));
             Some(if read {
                 BridgeEndpoint::NetRead(n)
             } else {
@@ -238,14 +241,30 @@ fn bridge_endpoint(name: &str, read: bool) -> Option<BridgeEndpoint> {
     }
 }
 
-fn bridge_read(ep: &mut BridgeEndpoint, buf: &mut [u8]) -> usize {
-    match ep {
-        BridgeEndpoint::ShellRead => {
-            std::io::Read::read(&mut std::io::stdin(), buf).unwrap_or(0)
+/// 桥读结果：数据 / 真 EOF（`Ok(0)`）/ 暂时无数据（网络超时，继续轮询）。
+enum BridgeRead {
+    Data(usize),
+    Eof,
+    WouldBlock,
+}
+
+fn bridge_read(ep: &mut BridgeEndpoint, buf: &mut [u8]) -> BridgeRead {
+    let res = match ep {
+        BridgeEndpoint::ShellRead => std::io::Read::read(&mut std::io::stdin(), buf),
+        BridgeEndpoint::NetRead(n) => std::io::Read::read(n, buf),
+        BridgeEndpoint::FileRead(f) => std::io::Read::read(f, buf),
+        _ => return BridgeRead::Eof,
+    };
+    match res {
+        Ok(0) => BridgeRead::Eof,
+        Ok(k) => BridgeRead::Data(k),
+        Err(e)
+            if e.kind() == std::io::ErrorKind::WouldBlock
+                || e.kind() == std::io::ErrorKind::TimedOut =>
+        {
+            BridgeRead::WouldBlock
         }
-        BridgeEndpoint::NetRead(n) => std::io::Read::read(n, buf).unwrap_or(0),
-        BridgeEndpoint::FileRead(f) => std::io::Read::read(f, buf).unwrap_or(0),
-        _ => 0,
+        Err(_) => BridgeRead::Eof,
     }
 }
 
@@ -300,11 +319,11 @@ pub fn zstream_start_bridge(from: &str, to: &str) -> bool {
         if let (Some(r), Some(w)) = (r.as_mut(), w.as_mut()) {
             let mut buf = [0u8; 4096];
             while flag.load(std::sync::atomic::Ordering::Relaxed) {
-                let n = bridge_read(r, &mut buf);
-                if n == 0 {
-                    break;
+                match bridge_read(r, &mut buf) {
+                    BridgeRead::Data(n) => bridge_write(w, &buf[..n]),
+                    BridgeRead::Eof => break,
+                    BridgeRead::WouldBlock => {} // 网络暂时无数据：继续轮询停止标志
                 }
-                bridge_write(w, &buf[..n]);
             }
         }
         bridges().lock().unwrap().remove(&key);

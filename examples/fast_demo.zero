@@ -1,0 +1,24 @@
+import io
+import control
+
+// 用户自定义 int-fast（循环 + 局部变量）
+func sumTo(n<int>) -> int: {
+    s = 0
+    for i in from(0).to(n):
+        s = s + i
+    return s
+}
+
+// 递归函数
+func fib(n<int>) -> int: {
+    if n <= 1:
+        return n
+    return fib(n - 1) + fib(n - 2)
+}
+
+// 字面量调用（应走快速路径）
+print("sumTo(10) = {}\n", sumTo(10))
+// 变量调用（应走 ZVal 路径）
+x = 10
+print("sumTo(x) = {}\n", sumTo(x))
+print("fib(10) = {}\n", fib(10))

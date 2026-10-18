@@ -1,7 +1,7 @@
 //! Expressions in the Zero language.
 
-use crate::ast::ZType;
 use crate::diag::Span;
+use crate::ZType;
 
 /// Binary operators, ordered by precedence in the parser.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,7 +81,7 @@ pub enum Expr {
 }
 
 impl Expr {
-    pub(crate) fn span(&self) -> Span {
+    pub fn span(&self) -> Span {
         match self {
             Expr::Int(_, s)
             | Expr::Float(_, s)

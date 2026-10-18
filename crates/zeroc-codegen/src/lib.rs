@@ -6,6 +6,10 @@
 //! takes `ZVal` parameters and returns `ZVal`.
 
 use std::collections::{HashMap, HashSet};
+pub use zeroc_ast as ast;
+pub use zeroc_import as import;
+pub use zeroc_parser as parser;
+pub use zeroc_scope as scope;
 
 use crate::ast::*;
 use crate::import::{Loader, BUILTIN_IMPORTS};
@@ -32,10 +36,19 @@ pub struct Codegen<'a> {
     blocks: Vec<HashMap<String, bool>>,
     /// Declared return type of the function being generated (None outside).
     current_ret: Option<ZType>,
+    /// Functions that can be compiled natively to `i64` (int-fast).
+    int_fast: HashSet<String>,
+    /// True while emitting the native `i64` variant of an int-fast function.
+    fast: bool,
 }
 
 /// Compile a program (plus everything loaded from its headers) to Rust.
-pub fn generate(prog: &Program, loader: &Loader, src_name: &str) -> String {
+pub fn generate(
+    prog: &Program,
+    loader: &Loader,
+    src_name: &str,
+    int_fast: &HashSet<String>,
+) -> String {
     let mut cg = Codegen {
         src_name,
         imports: Vec::new(),
@@ -46,6 +59,8 @@ pub fn generate(prog: &Program, loader: &Loader, src_name: &str) -> String {
         emitted_builtins: HashSet::new(),
         blocks: Vec::new(),
         current_ret: None,
+        int_fast: int_fast.clone(),
+        fast: false,
     };
 
     // 1. builtin header aliases -> `use` statements
@@ -116,34 +131,58 @@ impl<'a> Codegen<'a> {
     }
 
     fn gen_function(&mut self, f: &Function) {
+        self.gen_function_impl(f, "");
+        if self.int_fast.contains(&f.name) {
+            // Native i64 fast-path variant (no ZVal boxing).
+            self.gen_function_impl(f, "_i64");
+        }
+    }
+
+    fn gen_function_impl(&mut self, f: &Function, suffix: &str) {
+        let fast = !suffix.is_empty();
+        let ty = if fast { "i64" } else { "ZVal" };
         let params: Vec<String> = f
             .params
             .iter()
-            .map(|p| format!("mut {}: ZVal", p.name))
+            .map(|p| format!("mut {}: {ty}", p.name))
             .collect();
-        self.line(&format!("fn {}({}) -> ZVal {{", f.name, params.join(", ")));
+        self.line(&format!(
+            "fn {}{}({}) -> {ty} {{",
+            f.name,
+            suffix,
+            params.join(", ")
+        ));
         self.indent += 1;
         self.blocks
             .push(f.params.iter().map(|p| (p.name.clone(), false)).collect());
-        // Runtime type checks for annotated parameters.
-        for p in &f.params {
-            if let Some(ty) = &p.ty {
-                self.line(&format!(
-                    "__zero_check_type(&{}, {});",
-                    p.name,
-                    ztype_code(ty)
-                ));
+        let saved_fast = self.fast;
+        self.fast = fast;
+        if !fast {
+            // Runtime type checks for annotated parameters.
+            for p in &f.params {
+                if let Some(ty) = &p.ty {
+                    self.line(&format!(
+                        "__zero_check_type(&{}, {});",
+                        p.name,
+                        ztype_code(ty)
+                    ));
+                }
             }
         }
         self.current_ret = f.ret;
         if let Block::Stmts(stmts) = &f.body {
             self.gen_stmts(stmts);
             if !ends_with_return(stmts) {
-                self.line(&self.checked_nil_return());
+                if fast {
+                    self.line("return 0;");
+                } else {
+                    self.line(&self.checked_nil_return());
+                }
             }
         }
         self.current_ret = None;
         self.blocks.pop();
+        self.fast = saved_fast;
         self.indent -= 1;
         self.line("}");
     }
@@ -161,6 +200,7 @@ impl<'a> Codegen<'a> {
                     // Update the nearest existing binding (across blocks), or
                     // declare a new variable in the current block.
                     let declared = self.blocks.iter().rev().any(|b| b.contains_key(name));
+                    let ty = if self.fast { "i64" } else { "ZVal" };
                     if declared {
                         self.line(&format!("{name} = {expr};"));
                     } else {
@@ -169,7 +209,7 @@ impl<'a> Codegen<'a> {
                             .last_mut()
                             .expect("block stack")
                             .insert(name.clone(), *is_const);
-                        self.line(&format!("{kw} {name}: ZVal = {expr};"));
+                        self.line(&format!("{kw} {name}: {ty} = {expr};"));
                     }
                 }
                 Stmt::Expr(expr) => {
@@ -179,15 +219,22 @@ impl<'a> Codegen<'a> {
                 Stmt::Return { value } => {
                     let expr = match value {
                         Some(e) => self.gen_expr(e),
+                        None if self.fast => "0".to_string(),
                         None => "ZVal::Nil".to_string(),
                     };
-                    match &self.current_ret {
-                        Some(ty) => {
-                            let code =
-                                format!("return __zero_check_type(&{expr}, {});", ztype_code(ty));
-                            self.line(&code);
+                    if self.fast {
+                        self.line(&format!("return {expr};"));
+                    } else {
+                        match &self.current_ret {
+                            Some(ty) => {
+                                let code = format!(
+                                    "return __zero_check_type(&{expr}, {});",
+                                    ztype_code(ty)
+                                );
+                                self.line(&code);
+                            }
+                            _ => self.line(&format!("return {expr};")),
                         }
-                        _ => self.line(&format!("return {expr};")),
                     }
                 }
                 Stmt::WinCreate { name, args, .. } => {
@@ -241,14 +288,14 @@ impl<'a> Codegen<'a> {
                     else_ifs,
                     else_branch,
                 } => {
-                    let c = self.gen_expr(cond);
-                    self.line(&format!("if {c}.to_bool() {{"));
+                    let c = self.cond_code(cond);
+                    self.line(&format!("if {c} {{"));
                     self.indent += 1;
                     self.gen_block_body(then, None);
                     self.indent -= 1;
                     for (econd, ebody) in else_ifs {
-                        let ec = self.gen_expr(econd);
-                        self.line(&format!("}} else if {ec}.to_bool() {{"));
+                        let ec = self.cond_code(econd);
+                        self.line(&format!("}} else if {ec} {{"));
                         self.indent += 1;
                         self.gen_block_body(ebody, None);
                         self.indent -= 1;
@@ -262,8 +309,8 @@ impl<'a> Codegen<'a> {
                     self.line("}");
                 }
                 Stmt::While { cond, body } => {
-                    let c = self.gen_expr(cond);
-                    self.line(&format!("while {c}.to_bool() {{"));
+                    let c = self.cond_code(cond);
+                    self.line(&format!("while {c} {{"));
                     self.indent += 1;
                     self.gen_block_body(body, None);
                     self.indent -= 1;
@@ -281,21 +328,32 @@ impl<'a> Codegen<'a> {
                     let e = self.gen_expr(end);
                     let st = self.gen_expr(step);
                     let adj = if *inclusive { " + 1" } else { "" };
-                    self.line(&format!(
-                        "let __zero_loop_start = {s}.as_int().unwrap_or(0);"
-                    ));
-                    self.line(&format!(
-                        "let __zero_loop_end = {e}.as_int().unwrap_or(0){adj};"
-                    ));
-                    self.line(&format!(
-                        "let __zero_loop_step = {st}.as_int().unwrap_or(1);"
-                    ));
+                    if self.fast {
+                        self.line(&format!("let __zero_loop_start = {s};"));
+                        self.line(&format!("let __zero_loop_end = {e}{adj};"));
+                        self.line(&format!("let __zero_loop_step = {st};"));
+                    } else {
+                        self.line(&format!(
+                            "let __zero_loop_start = {s}.as_int().unwrap_or(0);"
+                        ));
+                        self.line(&format!(
+                            "let __zero_loop_end = {e}.as_int().unwrap_or(0){adj};"
+                        ));
+                        self.line(&format!(
+                            "let __zero_loop_step = {st}.as_int().unwrap_or(1);"
+                        ));
+                    }
                     self.line("let mut __zero_i = __zero_loop_start;");
                     self.line(
                         "while (__zero_loop_step >= 0 && __zero_i < __zero_loop_end) || (__zero_loop_step < 0 && __zero_i > __zero_loop_end) {",
                     );
                     self.indent += 1;
-                    self.gen_block_body(body, Some((var.as_str(), "ZVal::Int(__zero_i)")));
+                    let init = if self.fast {
+                        "__zero_i".to_string()
+                    } else {
+                        "ZVal::Int(__zero_i)".to_string()
+                    };
+                    self.gen_block_body(body, Some((var.as_str(), &init)));
                     self.line("__zero_i += __zero_loop_step;");
                     self.indent -= 1;
                     self.line("}");
@@ -303,32 +361,41 @@ impl<'a> Codegen<'a> {
                 Stmt::Each { var, iter, body } => {
                     let it = self.gen_expr(iter);
                     self.line(&format!("let __zero_each = {it};"));
-                    self.line("match &__zero_each {");
-                    self.indent += 1;
-                    self.line("ZVal::Int(__zero_n) => {");
-                    self.indent += 1;
-                    self.line("for __zero_i in 0..*__zero_n {");
-                    self.indent += 1;
-                    self.gen_block_body(body, Some((var.as_str(), "ZVal::Int(__zero_i)")));
-                    self.indent -= 1;
-                    self.line("}");
-                    self.indent -= 1;
-                    self.line("}");
-                    self.line("ZVal::Str(__zero_s) => {");
-                    self.indent += 1;
-                    self.line("for __zero_c in __zero_s.chars() {");
-                    self.indent += 1;
-                    self.gen_block_body(
-                        body,
-                        Some((var.as_str(), "ZVal::Str(__zero_c.to_string())")),
-                    );
-                    self.indent -= 1;
-                    self.line("}");
-                    self.indent -= 1;
-                    self.line("}");
-                    self.line("_ => {}");
-                    self.indent -= 1;
-                    self.line("}");
+                    if self.fast {
+                        // int-fast 函数中 iter 必为整数范围。
+                        self.line("for __zero_i in 0..__zero_each {");
+                        self.indent += 1;
+                        self.gen_block_body(body, Some((var.as_str(), "__zero_i")));
+                        self.indent -= 1;
+                        self.line("}");
+                    } else {
+                        self.line("match &__zero_each {");
+                        self.indent += 1;
+                        self.line("ZVal::Int(__zero_n) => {");
+                        self.indent += 1;
+                        self.line("for __zero_i in 0..*__zero_n {");
+                        self.indent += 1;
+                        self.gen_block_body(body, Some((var.as_str(), "ZVal::Int(__zero_i)")));
+                        self.indent -= 1;
+                        self.line("}");
+                        self.indent -= 1;
+                        self.line("}");
+                        self.line("ZVal::Str(__zero_s) => {");
+                        self.indent += 1;
+                        self.line("for __zero_c in __zero_s.chars() {");
+                        self.indent += 1;
+                        self.gen_block_body(
+                            body,
+                            Some((var.as_str(), "ZVal::Str(__zero_c.to_string())")),
+                        );
+                        self.indent -= 1;
+                        self.line("}");
+                        self.indent -= 1;
+                        self.line("}");
+                        self.line("_ => {}");
+                        self.indent -= 1;
+                        self.line("}");
+                    }
                 }
                 Stmt::Switch {
                     value,
@@ -429,7 +496,8 @@ impl<'a> Codegen<'a> {
                 .last_mut()
                 .expect("block stack")
                 .insert(v.to_string(), false);
-            self.line(&format!("let {v}: ZVal = {init};"));
+            let ty = if self.fast { "i64" } else { "ZVal" };
+            self.line(&format!("let {v}: {ty} = {init};"));
         }
         match block {
             Block::Stmts(stmts) => self.gen_stmts(stmts),
@@ -448,6 +516,9 @@ impl<'a> Codegen<'a> {
     }
 
     fn gen_expr(&mut self, expr: &Expr) -> String {
+        if self.fast {
+            return self.gen_fast_expr(expr);
+        }
         match expr {
             Expr::Int(v, _) => format!("ZVal::Int({v})"),
             Expr::Float(v, _) => format!("ZVal::Float({})", rust_float_literal(*v)),
@@ -469,40 +540,47 @@ impl<'a> Codegen<'a> {
                 callee,
                 args,
                 span: _,
-            } => match callee.as_str() {
-                BUILTIN_CALL_RUST => {
-                    // The analyzer guarantees args[0] is a string literal.
-                    let Expr::Str(raw, _) = &args[0] else {
-                        return "/* invalid call_rust */".to_string();
-                    };
-                    rust_block(raw, self.indent)
+            } => {
+                if let Some(fast_call) = self.try_fast_call(callee, args) {
+                    return fast_call;
                 }
-                BUILTIN_CALL_SYS => {
-                    self.used_call_sys = true;
-                    // The command must reach Rust as a `&str`, not a ZVal.
-                    let arg = self.gen_io_str_arg(&args[0]);
-                    format!("__zero_sys({arg})")
+                match callee.as_str() {
+                    BUILTIN_CALL_RUST => {
+                        // The analyzer guarantees args[0] is a string literal.
+                        let Expr::Str(raw, _) = &args[0] else {
+                            return "/* invalid call_rust */".to_string();
+                        };
+                        rust_block(raw, self.indent)
+                    }
+                    BUILTIN_CALL_SYS => {
+                        self.used_call_sys = true;
+                        // The command must reach Rust as a `&str`, not a ZVal.
+                        let arg = self.gen_io_str_arg(&args[0]);
+                        format!("__zero_sys({arg})")
+                    }
+                    "print" | "input" if self.io_imported => {
+                        let fmt = self.gen_io_str_arg(&args[0]);
+                        let rest: Vec<String> =
+                            args[1..].iter().map(|a| self.gen_expr(a)).collect();
+                        format!("{callee}({fmt}, &[{}])", rest.join(", "))
+                    }
+                    "input_s" if self.io_imported => "input_s()".to_string(),
+                    "set_stream" if self.io_imported => {
+                        let kind = self.gen_io_str_arg(&args[0]);
+                        let name = if args.len() >= 2 {
+                            format!("Some({})", self.gen_io_str_arg(&args[1]))
+                        } else {
+                            "None".to_string()
+                        };
+                        format!("set_stream({kind}, {name})")
+                    }
+                    _ => {
+                        let args_code: Vec<String> =
+                            args.iter().map(|a| self.gen_expr(a)).collect();
+                        format!("{callee}({})", args_code.join(", "))
+                    }
                 }
-                "print" | "input" if self.io_imported => {
-                    let fmt = self.gen_io_str_arg(&args[0]);
-                    let rest: Vec<String> = args[1..].iter().map(|a| self.gen_expr(a)).collect();
-                    format!("{callee}({fmt}, &[{}])", rest.join(", "))
-                }
-                "input_s" if self.io_imported => "input_s()".to_string(),
-                "set_stream" if self.io_imported => {
-                    let kind = self.gen_io_str_arg(&args[0]);
-                    let name = if args.len() >= 2 {
-                        format!("Some({})", self.gen_io_str_arg(&args[1]))
-                    } else {
-                        "None".to_string()
-                    };
-                    format!("set_stream({kind}, {name})")
-                }
-                _ => {
-                    let args_code: Vec<String> = args.iter().map(|a| self.gen_expr(a)).collect();
-                    format!("{callee}({})", args_code.join(", "))
-                }
-            },
+            }
             Expr::NetCall { member, args, .. } => {
                 let fname = match member.as_str() {
                     "connect" => "net_connect",
@@ -586,6 +664,96 @@ impl<'a> Codegen<'a> {
                 }
             }
         }
+    }
+
+    /// Condition code: ZVal truthiness normally, `!= 0` on the i64 fast path.
+    fn cond_code(&mut self, e: &Expr) -> String {
+        let c = self.gen_expr(e);
+        if self.fast {
+            format!("{c} != 0")
+        } else {
+            format!("{c}.to_bool()")
+        }
+    }
+
+    /// Native `i64` expression emitter (used inside int-fast functions).
+    /// The analyzer guarantees only integer constructs appear here.
+    fn gen_fast_expr(&mut self, expr: &Expr) -> String {
+        match expr {
+            Expr::Int(v, _) => format!("{v}i64"),
+            Expr::Ident(name, _) => name.clone(),
+            Expr::Binary { op, lhs, rhs, .. } => {
+                let l = self.gen_expr(lhs);
+                let r = self.gen_expr(rhs);
+                match op {
+                    BinOp::Add => format!("{l}.wrapping_add({r})"),
+                    BinOp::Sub => format!("{l}.wrapping_sub({r})"),
+                    BinOp::Mul => format!("{l}.wrapping_mul({r})"),
+                    BinOp::Div => format!("if {r} == 0 {{ 0 }} else {{ {l}.wrapping_div({r}) }}"),
+                    BinOp::Rem => format!("if {r} == 0 {{ 0 }} else {{ {l}.wrapping_rem({r}) }}"),
+                    BinOp::Eq => format!("({l} == {r}) as i64"),
+                    BinOp::Ne => format!("({l} != {r}) as i64"),
+                    BinOp::Lt => format!("({l} < {r}) as i64"),
+                    BinOp::Le => format!("({l} <= {r}) as i64"),
+                    BinOp::Gt => format!("({l} > {r}) as i64"),
+                    BinOp::Ge => format!("({l} >= {r}) as i64"),
+                    BinOp::And => format!("(({l} != 0 && {r} != 0) as i64)"),
+                    BinOp::Or => format!("(({l} != 0 || {r} != 0) as i64)"),
+                    BinOp::PathJoin => "0".to_string(), // unreachable in int-fast
+                }
+            }
+            Expr::Unary { op, operand, .. } => {
+                let o = self.gen_expr(operand);
+                match op {
+                    UnOp::Neg => format!("{o}.wrapping_neg()"),
+                    UnOp::Not => format!("({o} == 0) as i64"),
+                }
+            }
+            Expr::Call { callee, args, .. } => {
+                let args_code: Vec<String> = args.iter().map(|a| self.gen_expr(a)).collect();
+                format!("{callee}_i64({})", args_code.join(", "))
+            }
+            _ => "0".to_string(), // unreachable in int-fast functions
+        }
+    }
+
+    /// Native fast call from dynamic code: int-fast callee with all-int-literal
+    /// arguments -> `ZVal::Int(<callee>_i64(...))`.
+    fn try_fast_call(&self, callee: &str, args: &[Expr]) -> Option<String> {
+        if !self.int_fast.contains(callee) {
+            return None;
+        }
+        let all_int_literals = args.iter().all(|a| match a {
+            Expr::Int(..) => true,
+            Expr::Unary {
+                op: UnOp::Neg,
+                operand,
+                ..
+            } => matches!(&**operand, Expr::Int(..)),
+            _ => false,
+        });
+        if !all_int_literals {
+            return None;
+        }
+        let args_code: Vec<String> = args
+            .iter()
+            .map(|a| match a {
+                Expr::Int(v, _) => format!("{v}i64"),
+                Expr::Unary {
+                    op: UnOp::Neg,
+                    operand,
+                    ..
+                } => {
+                    if let Expr::Int(v, _) = &**operand {
+                        format!("{v}i64.wrapping_neg()")
+                    } else {
+                        unreachable!()
+                    }
+                }
+                _ => unreachable!(),
+            })
+            .collect();
+        Some(format!("ZVal::Int({callee}_i64({}))", args_code.join(", ")))
     }
 
     /// Optional positional window arg: `Some(&expr)` or `None`.
@@ -717,7 +885,18 @@ mod tests {
         let mut loader = Loader::new(Path::new("."));
         loader.register_main(&prog, "test.zero").unwrap();
         loader.load(&prog, "test.zero").unwrap();
-        generate(&prog, &loader, "test.zero")
+        let fns = &loader.functions;
+        let mut all_fns: HashMap<String, &Function> = HashMap::new();
+        for f in prog.functions() {
+            all_fns.insert(f.name.clone(), f);
+        }
+        for (_, hp) in &loader.zero_headers {
+            for f in hp.functions() {
+                all_fns.insert(f.name.clone(), f);
+            }
+        }
+        let int_fast = scope::int_fast::analyze(&all_fns, fns);
+        generate(&prog, &loader, "test.zero", &int_fast)
     }
 
     #[test]
@@ -854,10 +1033,17 @@ mod tests {
         // math is compiled from Zero and builds on lowlevel_math.
         assert!(out.contains("std/math.zh"));
         assert!(out.contains("fn add(mut a: ZVal, mut b: ZVal) -> ZVal {"));
-        assert!(out.contains("return zadd(a.clone(), b.clone());"));
+        assert!(
+            out.contains("return __zero_check_type(&zadd(a.clone(), b.clone()), ZValType::Int);")
+        );
         assert!(out.contains("fn pow(mut base: ZVal, mut exp: ZVal) -> ZVal {"));
         assert!(out.contains("fn gcd(mut a: ZVal, mut b: ZVal) -> ZVal {"));
         assert!(out.contains("fn digit_sum(mut n: ZVal) -> ZVal {"));
+        // 原生 i64 快速路径：包装函数生成 _i64 版本，字面量调用点直接走原生。
+        assert!(out.contains("fn add_i64(mut a: i64, mut b: i64) -> i64 {"));
+        assert!(out.contains("fn pow_i64(mut base: i64, mut exp: i64) -> i64 {"));
+        assert!(out.contains("ZVal::Int(add_i64(1i64, 2i64));"));
+        assert!(out.contains("ZVal::Int(pow_i64(2i64, 3i64));"));
     }
 
     #[test]

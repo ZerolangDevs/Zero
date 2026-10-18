@@ -27,7 +27,7 @@ print("1 + 2 * 3 = {}\n", 1 + 2 * 3)
 ```
 
 ```bash
-cargo run --release -- examples/hello_zero.zero --build
+cargo run --release -- examples/hello_zero.zero
 ./hello_zero                   # Windows：hello_zero.exe
 ```
 
@@ -158,27 +158,33 @@ Zero 无意取代任何语言，它是一座桥梁：连接动态语言的轻松
 ## 构建与使用
 
 ```bash
-cargo build --release              # 构建 zeroc 编译器
-cargo run -- examples\hello.zero -o out.rs
-rustc out.rs -o out                # 然后运行 ./out
+cargo build --release              # 构建 zero 编译器
+cargo run -- examples\hello.zero   # 默认：构建原生可执行文件（-o2）
+cargo run -- examples\hello.zero -rust -o hello.rs   # 只生成 Rust
+cargo run -- examples\hello.zero -wasm -o hello.wasm # WebAssembly
+cargo run -- examples\hello.zero -o3   # 完全优化（LTO）
 ```
 
-- `zeroc <input.zero> [-o <output.rs>]` —— 不带 `-o` 时，生成的 Rust 代码输出到标准输出。
-- `zeroc <input.zero> --build` —— 生成 Rust 代码后自动调用 `rustc` 编译为可执行文件（与 `.rs` 文件同目录）。如果默认链接器缺失（例如没有 MSVC `link.exe`），会自动改用 Rust 工具链自带的 `rust-lld` 链接器重试。
+- `zero <input.zero>` —— 默认：编译并构建当前平台的原生可执行文件（普通程序用 `rustc`；`win` 程序用含 Slint 的 Cargo 工程）。
+- 优化档位（默认 `-o2`）：`-o1` 无优化（构建最快）；`-o2` 高性价比（`opt-level=2` + strip / win 用 release + thin LTO）；`-o3` 完全优化（`opt-level=3` + `lto=fat` + 单 codegen 单元）。
+- `zero <input.zero> -rust [-o out.rs]` —— 只生成 Rust 源码（无 `-o` 时输出到标准输出）。
+- `zero <input.zero> -wasm [-o out.wasm]` —— 生成 Rust 并编译为 WebAssembly（可能需要 `rustup target add wasm32-unknown-unknown`；wasm 内 IO 为空操作）。
+- 如果默认链接器缺失（例如没有 MSVC `link.exe`），会自动改用 Rust 工具链自带的 `rust-lld` 链接器重试。
 - Windows 说明：本仓库的 `.cargo/config.toml` 使用 Rust 自带的 `rust-lld` 链接器，因此即使没有 MSVC `link.exe` 也能构建。
 
 ## 项目结构
 
 ```text
 src/
-  main.rs            命令行入口 + 编译管线
-  diag/              诊断（源码区间、错误渲染）
-  lexer/             词法分析（token、lowlevel 原始块扫描）
-  ast/               语法树（表达式、语句）
-  parser/            递归下降解析器
-  scope/             作用域分析 + 函数 / 类型检查
-  import/            头文件加载（标准库、加载器）
-  codegen/           Rust 代码生成（输出辅助、运行时）
+  main.rs            命令行入口 + 编译管线（根包 zeroc）
+crates/              workspace 库 crate
+  zeroc-diag/        诊断（源码区间、错误渲染）
+  zeroc-lexer/       词法分析（token、lowlevel 原始块扫描）
+  zeroc-ast/         语法树（表达式、语句）
+  zeroc-parser/      递归下降解析器
+  zeroc-scope/       作用域分析 + 函数 / 类型检查
+  zeroc-import/      头文件加载（标准库、加载器）
+  zeroc-codegen/     Rust 代码生成（输出辅助、运行时）
 std/
   stream.rs          底层流抽象（shell / 文件）
   stream_io.rs       IO 流封装

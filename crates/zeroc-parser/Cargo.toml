@@ -1,0 +1,9 @@
+[package]
+name = "zeroc-parser"
+version = "0.3.0"
+edition = "2021"
+
+[dependencies]
+zeroc-ast = { path = "../zeroc-ast" }
+zeroc-diag = { path = "../zeroc-diag" }
+zeroc-lexer = { path = "../zeroc-lexer" }

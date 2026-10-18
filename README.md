@@ -29,7 +29,7 @@ print("1 + 2 * 3 = {}\n", 1 + 2 * 3)
 ```
 
 ```bash
-cargo run --release -- examples/hello_zero.zero --build
+cargo run --release -- examples/hello_zero.zero
 ./hello_zero                   # Windows: hello_zero.exe
 ```
 
@@ -219,17 +219,29 @@ Design trade-offs:
 ## Build & usage
 
 ```bash
-cargo build --release              # build the `zeroc` compiler
-cargo run -- examples\hello.zero -o out.rs
-rustc out.rs -o out                # then run ./out
+cargo build --release              # build the `zero` compiler
+cargo run -- examples\hello.zero   # build a native executable (default -o2)
+cargo run -- examples\hello.zero -rust -o hello.rs   # Rust source only
+cargo run -- examples\hello.zero -wasm -o hello.wasm # WebAssembly
+cargo run -- examples\hello.zero -o3   # full optimization (LTO)
 ```
 
-- `zeroc <input.zero> [-o <output.rs>]` — without `-o`, generated Rust goes
-  to stdout.
-- `zeroc <input.zero> --build` — generate Rust, then compile it into an
-  executable next to the `.rs` file by invoking `rustc` automatically. If
-  the default linker is missing (e.g. no MSVC `link.exe`), it retries with
-  the `rust-lld` linker bundled with the Rust toolchain.
+- `zero <input.zero>` — default: compile and build a native executable for
+  the current platform (`rustc`, or a Cargo project with Slint for `win`
+  programs).
+- Optimization levels (default `-o2`):
+  - `-o1` no optimization (fastest build);
+  - `-o2` high value optimization (`opt-level=2` + strip / release + thin
+    LTO for `win`);
+  - `-o3` full optimization (`opt-level=3` + `lto=fat` + single codegen
+    unit).
+- `zero <input.zero> -rust [-o out.rs]` — only generate Rust source
+  (stdout if no `-o`).
+- `zero <input.zero> -wasm [-o out.wasm]` — generate Rust and compile it to
+  WebAssembly (`rustup target add wasm32-unknown-unknown` may be needed;
+  IO is a no-op inside wasm).
+- If the default linker is missing (e.g. no MSVC `link.exe`), it retries
+  with the bundled `rust-lld`.
 - Windows note: this repo's `.cargo/config.toml` uses Rust's bundled
   `rust-lld` linker so the project builds even without MSVC `link.exe`.
 
@@ -237,14 +249,15 @@ rustc out.rs -o out                # then run ./out
 
 ```text
 src/
-  main.rs            CLI entry + compile pipeline
-  diag/              diagnostics (span, error rendering)
-  lexer/             tokenizer (token, raw lowlevel block scanner)
-  ast/               syntax tree (expr, stmt)
-  parser/            recursive-descent parser
-  scope/             scope analysis + function/type checks
-  import/            header loading (stdlib, loader)
-  codegen/           Rust codegen (emit, runtime)
+  main.rs            CLI entry + compile pipeline (root package `zeroc`)
+crates/              workspace of library crates
+  zeroc-diag/        diagnostics (span, error rendering)
+  zeroc-lexer/       tokenizer (token, raw lowlevel block scanner)
+  zeroc-ast/         syntax tree (expr, stmt)
+  zeroc-parser/      recursive-descent parser
+  zeroc-scope/       scope analysis + function/type checks
+  zeroc-import/      header loading (stdlib, loader)
+  zeroc-codegen/     Rust codegen (emit, runtime)
 std/
   stream.rs          low-level stream abstraction (shell / file)
   stream_io.rs       IO stream wrapper

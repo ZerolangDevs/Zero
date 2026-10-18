@@ -3,6 +3,7 @@
 //! The lexer is pull-based so the parser can jump over raw `lowlevel`
 //! blocks (which contain unparsed Rust code) without tokenizing them.
 
+pub use zeroc_diag as diag;
 mod raw;
 mod token;
 
