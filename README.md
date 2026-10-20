@@ -101,6 +101,15 @@ the OS whenever you need it.
   `network -> network_stream -> stream`; combine with `io.streaming` to pipe
   data to/from files or the terminal. Programs using `network` are compiled
   as a Cargo project with the `ureq` dependency (Windows / Linux / macOS).
+- **Standard library `server`** — HTTP server (`import server`), `net.*`
+  style: register routes with `server.get/post/put/delete(path, handler)` or
+  the generic `server.request(method, path, handler)`, then block on
+  `server.start(port)`. Path parameters use `{name}` (matching `print`
+  format): `/user/{id}`. Handlers take no arguments or `(method, path,
+  body)`; inside a handler `server.query(key)`, `server.header(name)` and
+  `server.param(key)` access the current request. Built on
+  `server -> lowlevel_server`, a pure `std::net` HTTP/1.1 server (one thread
+  per connection).
 - **Window library `win`** — native GUI (`import win`, cross-platform):
   built on **Slint** with the **Material Design** style. Create a window
   with `name<win> = { x=..., y=..., size=... }`, drive it with
@@ -277,6 +286,7 @@ std/
   sleep.zh           sleep library in Zero: sleep(ms)
   network_stream.rs  low-level networking: raw TCP + HTTP/HTTPS (ureq/rustls)
   network.zh         network library in Zero: connect / send / recv / close
+  lowlevel_server.rs  low-level Flask-style HTTP server in raw Rust (std::net)
 examples/            runnable examples (hello_zero, func_typed, control_demo, ...)
 ```
 

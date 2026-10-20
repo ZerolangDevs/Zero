@@ -353,6 +353,21 @@ impl<'a> ScopeAnalyzer<'a> {
                 }
                 Ok(())
             }
+            Expr::ServerCall { member, args, span } => {
+                self.check_server_call(member, args, span)?;
+                // route 类的最后一个参数是 handler 函数名，不作为变量分析。
+                let is_route = matches!(
+                    member.as_str(),
+                    "get" | "post" | "put" | "delete" | "request"
+                );
+                for (i, a) in args.iter().enumerate() {
+                    if is_route && i + 1 == args.len() {
+                        continue;
+                    }
+                    self.analyze_expr(a)?;
+                }
+                Ok(())
+            }
             Expr::WinOp {
                 win,
                 path,
@@ -469,6 +484,59 @@ impl<'a> ScopeAnalyzer<'a> {
     }
 
     /// Validate a window operation and its named arguments.
+    /// Validate a `server.*` call. Route handlers must reference a known
+    /// function with 0 or 3 parameters (`func h()` or `func h(method, path,
+    /// body)`); other members follow fixed arities.
+    fn check_server_call(
+        &self,
+        member: &str,
+        args: &[Expr],
+        span: &Span,
+    ) -> Result<(), CompileError> {
+        let route_arity = match member {
+            "get" | "post" | "put" | "delete" => Some(2),
+            "request" => Some(3),
+            "start" => Some(1),
+            "query" | "header" | "param" => Some(1),
+            other => {
+                return Err(self.err(format!("unknown server method '{other}'"), *span));
+            }
+        };
+        if let Some(n) = route_arity {
+            if args.len() != n {
+                return Err(self.err(format!("server.{member} takes {n} argument(s)"), *span));
+            }
+        }
+        // route 类：最后一个参数是 handler 函数名。
+        if matches!(member, "get" | "post" | "put" | "delete" | "request") {
+            let Some(Expr::Ident(handler, _)) = args.last() else {
+                return Err(self.err(
+                    format!("server.{member}: handler must be a function name"),
+                    *span,
+                ));
+            };
+            match self.functions.get(handler) {
+                Some(info) if info.params.len() == 0 || info.params.len() == 3 => {}
+                Some(info) => {
+                    return Err(self.err(
+                        format!(
+                            "server handler '{handler}' takes {} argument(s); use 0 or 3",
+                            info.params.len()
+                        ),
+                        *span,
+                    ));
+                }
+                None => {
+                    return Err(self.err(
+                        format!("unknown server handler function '{handler}'"),
+                        *span,
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn check_win_op(
         &mut self,
         win: &str,

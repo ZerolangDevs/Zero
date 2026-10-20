@@ -38,6 +38,9 @@ pub struct Parser<'a> {
     /// True once `import network` has been seen: `net.get(...)` etc. are
     /// enabled.
     network_enabled: bool,
+    /// True once `import server` has been seen: `server.route(...)` etc.
+    /// are enabled.
+    server_enabled: bool,
 }
 
 /// Parse a source file into a program.
@@ -56,6 +59,7 @@ impl<'a> Parser<'a> {
             control_enabled: false,
             win_enabled: false,
             network_enabled: false,
+            server_enabled: false,
         }
     }
 
@@ -230,6 +234,9 @@ impl<'a> Parser<'a> {
         }
         if name == "network" {
             self.network_enabled = true;
+        }
+        if name == "server" {
+            self.server_enabled = true;
         }
         Ok(Import {
             name,
@@ -1054,6 +1061,38 @@ impl<'a> Parser<'a> {
                 }
                 let close = self.expect(&TokKind::RParen)?;
                 return Ok(Expr::NetCall {
+                    member,
+                    args,
+                    span: Span::new(tok.span.start, close.span.end),
+                });
+            }
+        }
+        // Server calls: `server.route(...)`, `server.run(...)`, ... .
+        if let Expr::Ident(ident, _) = &expr {
+            if ident == "server" && self.at(&TokKind::Dot)? {
+                if !self.server_enabled {
+                    return Err(CompileError::at(
+                        "server.* requires 'import server'",
+                        self.file.clone(),
+                        tok.span,
+                    ));
+                }
+                self.next()?;
+                let (member, _) = self.expect_ident("server member")?;
+                self.expect(&TokKind::LParen)?;
+                let mut args = Vec::new();
+                if !self.at(&TokKind::RParen)? {
+                    loop {
+                        args.push(self.parse_expr()?);
+                        if self.at(&TokKind::Comma)? {
+                            self.next()?;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                let close = self.expect(&TokKind::RParen)?;
+                return Ok(Expr::ServerCall {
                     member,
                     args,
                     span: Span::new(tok.span.start, close.span.end),

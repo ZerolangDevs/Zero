@@ -22,6 +22,8 @@ pub const STD_DEPS: &[(&str, &[&str])] = &[
     ("lowlevel_sleep", &[]),
     ("network_stream", &["stream"]),
     ("network", &["network_stream"]),
+    ("server", &["lowlevel_server"]),
+    ("lowlevel_server", &[]),
 ];
 
 /// Standard library header file names (`name` -> file). `.rs` files are raw
@@ -40,6 +42,7 @@ pub const STD_FILES: &[(&str, &str)] = &[
     ("lowlevel_sleep", "lowlevel_sleep.rs"),
     ("sleep", "sleep.zh"),
     ("network_stream", "network_stream.rs"),
+    ("lowlevel_server", "lowlevel_server.rs"),
 ];
 
 /// Directory holding the standard library files. Resolution order:

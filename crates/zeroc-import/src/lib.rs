@@ -254,6 +254,11 @@ impl Loader {
             self.net_imported = true;
             return Ok(());
         }
+        if name == "server" {
+            // `server` is a syntax library: the parser gates `server.*` calls.
+            // Its runtime (`lowlevel_server`) is loaded as a dependency above.
+            return Ok(());
+        }
 
         if name == "math" || name == "strings" || name == "sys" || name == "sleep" {
             // These std headers are written in Zero: parse them like a
@@ -282,6 +287,7 @@ impl Loader {
             || name == "lowlevel_win"
             || name == "lowlevel_sleep"
             || name == "network_stream"
+            || name == "lowlevel_server"
         {
             self.register_rust_fns(&content);
         }

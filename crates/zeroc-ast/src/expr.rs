@@ -59,6 +59,13 @@ pub enum Expr {
         args: Vec<Expr>,
         span: Span,
     },
+    /// Server call: `server.route(...)`, `server.run(...)`, ... .
+    /// Requires `import server`.
+    ServerCall {
+        member: String,
+        args: Vec<Expr>,
+        span: Span,
+    },
     /// Window operation: `win.update()`, `win.add.button(...)`,
     /// `win.<id>.del()` / `win.<id>.update(...)`. Requires `import win`.
     WinOp {
@@ -92,6 +99,7 @@ impl Expr {
             | Expr::Call { span: s, .. }
             | Expr::TypeTo { span: s, .. }
             | Expr::NetCall { span: s, .. }
+            | Expr::ServerCall { span: s, .. }
             | Expr::WinOp { span: s, .. }
             | Expr::Binary { span: s, .. }
             | Expr::Unary { span: s, .. } => *s,

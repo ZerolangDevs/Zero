@@ -1,0 +1,28 @@
+// server_demo.zero - HTTP 服务器（库 server），net.* 风格
+// 用法：zero server_demo.zero && ./server_demo.exe，然后浏览器/curl 访问。
+//   GET  /                 -> "Hello, Zero Server!"
+//   GET  /user/{id}?name=x -> 路径参数（{} 与 print 格式一致）+ query + 请求头
+//   POST /echo             -> 回显 method + path + body
+import io
+import server
+
+func home(): {
+    return "Hello, Zero Server!"
+}
+
+func user(): {
+    id = server.param("id")
+    q = server.query("name")
+    ua = server.header("User-Agent")
+    return "user " + id + " | name=" + q + " | ua=" + ua
+}
+
+func echo(method, path, body): {
+    return method + " " + path + " " + body
+}
+
+server.get("/", home)
+server.get("/user/{id}", user)
+server.post("/echo", echo)
+server.request("PATCH", "/x", home)
+server.start(8080)

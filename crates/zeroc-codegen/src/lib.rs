@@ -40,6 +40,8 @@ pub struct Codegen<'a> {
     int_fast: HashSet<String>,
     /// True while emitting the native `i64` variant of an int-fast function.
     fast: bool,
+    /// Callable name -> declared parameter count (for server handlers).
+    fn_arity: HashMap<String, usize>,
 }
 
 /// Compile a program (plus everything loaded from its headers) to Rust.
@@ -61,6 +63,11 @@ pub fn generate(
         current_ret: None,
         int_fast: int_fast.clone(),
         fast: false,
+        fn_arity: loader
+            .functions
+            .iter()
+            .map(|(k, v)| (k.clone(), v.params.len()))
+            .collect(),
     };
 
     // 1. builtin header aliases -> `use` statements
@@ -598,6 +605,53 @@ impl<'a> Codegen<'a> {
                 let args_code: Vec<String> = args.iter().map(|a| self.gen_expr(a)).collect();
                 format!("{fname}({})", args_code.join(", "))
             }
+            Expr::ServerCall { member, args, .. } => {
+                let is_route = matches!(
+                    member.as_str(),
+                    "get" | "post" | "put" | "delete" | "request"
+                );
+                if is_route {
+                    // 路由注册：`server_add(method, path, handler)`，
+                    // handler 按参数个数转成 `ZRouteHandler::F0/F3` 函数指针。
+                    let (method_code, path_expr) = if member == "request" {
+                        // args = [method, path, handler]
+                        (self.gen_expr(&args[0]), self.gen_expr(&args[1]))
+                    } else {
+                        let m = match member.as_str() {
+                            "get" => "GET",
+                            "post" => "POST",
+                            "put" => "PUT",
+                            "delete" => "DELETE",
+                            _ => unreachable!(),
+                        };
+                        (
+                            format!("ZVal::Str(\"{m}\".into())"),
+                            self.gen_expr(&args[0]),
+                        )
+                    };
+                    let handler_name = match args.last() {
+                        Some(Expr::Ident(n, _)) => n.clone(),
+                        _ => unreachable!("analyzer rejects non-ident handler"),
+                    };
+                    let arity = *self.fn_arity.get(&handler_name).unwrap_or(&0);
+                    let adapt = if arity == 3 {
+                        format!("ZRouteHandler::F3({handler_name})")
+                    } else {
+                        format!("ZRouteHandler::F0({handler_name})")
+                    };
+                    format!("server_add({method_code}, {path_expr}, {adapt})")
+                } else {
+                    let fname = match member.as_str() {
+                        "start" => "server_start",
+                        "query" => "server_query",
+                        "header" => "server_header",
+                        "param" => "server_param",
+                        _ => unreachable!("analyzer rejects unknown server method"),
+                    };
+                    let args_code: Vec<String> = args.iter().map(|a| self.gen_expr(a)).collect();
+                    format!("{fname}({})", args_code.join(", "))
+                }
+            }
             Expr::WinOp {
                 win, path, args, ..
             } => {
@@ -1044,6 +1098,22 @@ mod tests {
         assert!(out.contains("fn pow_i64(mut base: i64, mut exp: i64) -> i64 {"));
         assert!(out.contains("ZVal::Int(add_i64(1i64, 2i64));"));
         assert!(out.contains("ZVal::Int(pow_i64(2i64, 3i64));"));
+    }
+
+    #[test]
+    fn server_emit() {
+        let out = generate_for(
+            "import server\nfunc home(): {\n    return \"hi\"\n}\nfunc echo(m, p, b): {\n    return b\n}\nfn main() { server.get(\"/\", home)\nserver.post(\"/echo\", echo)\nserver.request(\"PATCH\", \"/x\", home)\nserver.start(8080)\nq = server.query(\"k\")\nh = server.header(\"User-Agent\")\np = server.param(\"id\") }",
+        );
+        assert!(out.contains("std/lowlevel_server.rs"));
+        // 0 参 handler -> F0，3 参 handler -> F3。
+        assert!(out.contains("server_add(ZVal::Str(\"GET\".into()), ZVal::Str(\"/\".into()), ZRouteHandler::F0(home));"));
+        assert!(out.contains("server_add(ZVal::Str(\"POST\".into()), ZVal::Str(\"/echo\".into()), ZRouteHandler::F3(echo));"));
+        assert!(out.contains("server_add(ZVal::Str(\"PATCH\".into()), ZVal::Str(\"/x\".into()), ZRouteHandler::F0(home));"));
+        assert!(out.contains("server_start(ZVal::Int(8080));"));
+        assert!(out.contains("server_query(ZVal::Str(\"k\".into()));"));
+        assert!(out.contains("server_header(ZVal::Str(\"User-Agent\".into()));"));
+        assert!(out.contains("server_param(ZVal::Str(\"id\".into()));"));
     }
 
     #[test]
