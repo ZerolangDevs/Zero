@@ -48,6 +48,12 @@ pub fn parse(src: &str, file: &str) -> Result<Program, CompileError> {
     Parser::new(src, file).parse_program()
 }
 
+/// Parse a source file into a program, collecting every syntax error:
+/// after each error parsing resumes on the next line.
+pub fn parse_collect(src: &str, file: &str) -> (Program, Vec<CompileError>) {
+    Parser::new(src, file).parse_program_collect()
+}
+
 impl<'a> Parser<'a> {
     fn new(src: &'a str, file: &str) -> Self {
         Parser {
@@ -179,6 +185,57 @@ impl<'a> Parser<'a> {
             }
         }
         Ok(Program { items })
+    }
+
+    /// Parse with error recovery: collect every syntax error, then resume
+    /// on the next line. Returns the best-effort program plus all errors.
+    pub fn parse_program_collect(&mut self) -> (Program, Vec<CompileError>) {
+        let mut items = Vec::new();
+        let mut errors = Vec::new();
+        loop {
+            let tok = match self.peek() {
+                Ok(t) => t.clone(),
+                Err(e) => {
+                    errors.push(e);
+                    break;
+                }
+            };
+            if tok.kind == TokKind::Eof {
+                break;
+            }
+            let item_result = match tok.kind {
+                TokKind::Import => self.parse_import().map(Item::Import),
+                TokKind::Fn | TokKind::Func => self.parse_function().map(Item::Function),
+                _ => self.parse_stmt().map(Item::Top),
+            };
+            match item_result {
+                Ok(item) => items.push(item),
+                Err(e) => {
+                    errors.push(e);
+                    if self.recover_line().is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+        (Program { items }, errors)
+    }
+
+    /// Error recovery: discard the tokens left on the current line so the
+    /// next parse attempt starts on the following line.
+    fn recover_line(&mut self) -> Result<(), CompileError> {
+        let line = line_col(self.src, self.peek()?.span.start).0;
+        loop {
+            if self.at(&TokKind::Eof)? {
+                break;
+            }
+            let tok_line = line_col(self.src, self.peek()?.span.start).0;
+            if tok_line != line {
+                break;
+            }
+            self.next()?;
+        }
+        Ok(())
     }
 
     fn parse_import(&mut self) -> Result<Import, CompileError> {
@@ -1134,6 +1191,24 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_collect_gathers_multiple_syntax_errors() {
+        let (prog, errors) = parse_collect(
+            "import io\nx = 10\nprint(x + undefined_var\ny = 20\nbad syntax here !!!\nw = \"ok\"\nfunc broken(:\n    return 1\n",
+            "test.zero",
+        );
+        assert!(
+            errors.len() >= 3,
+            "got {} errors: {:?}",
+            errors.len(),
+            errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+        // 跨错误恢复：错误行之后的有效行仍被解析。
+        assert!(prog.items.iter().any(|i| matches!(i, Item::Top(_))));
+        // 每个语法错误都带行号（span）。
+        assert!(errors.iter().all(|e| e.span.is_some()));
+    }
 
     #[test]
     fn parses_a_minimal_program() {

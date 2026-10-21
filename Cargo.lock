@@ -9,6 +9,7 @@ dependencies = [
  "zeroc-ast",
  "zeroc-codegen",
  "zeroc-diag",
+ "zeroc-fmt",
  "zeroc-import",
  "zeroc-lexer",
  "zeroc-parser",
@@ -36,6 +37,15 @@ dependencies = [
 [[package]]
 name = "zeroc-diag"
 version = "0.3.0"
+
+[[package]]
+name = "zeroc-fmt"
+version = "0.3.0"
+dependencies = [
+ "zeroc-ast",
+ "zeroc-diag",
+ "zeroc-parser",
+]
 
 [[package]]
 name = "zeroc-import"

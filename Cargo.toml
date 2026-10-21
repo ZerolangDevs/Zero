@@ -7,6 +7,7 @@ edition = "2021"
 zeroc-ast = { path = "crates/zeroc-ast" }
 zeroc-codegen = { path = "crates/zeroc-codegen" }
 zeroc-diag = { path = "crates/zeroc-diag" }
+zeroc-fmt = { path = "crates/zeroc-fmt" }
 zeroc-import = { path = "crates/zeroc-import" }
 zeroc-lexer = { path = "crates/zeroc-lexer" }
 zeroc-parser = { path = "crates/zeroc-parser" }

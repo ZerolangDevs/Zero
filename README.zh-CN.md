@@ -170,6 +170,8 @@ cargo run -- examples\hello.zero -o3   # 完全优化（LTO）
 - 优化档位（默认 `-o2`）：`-o1` 无优化（构建最快）；`-o2` 高性价比（`opt-level=2` + strip / win 用 release + thin LTO）；`-o3` 完全优化（`opt-level=3` + `lto=fat` + 单 codegen 单元）。
 - `zero <input.zero> -rust [-o out.rs]` —— 只生成 Rust 源码（无 `-o` 时输出到标准输出）。
 - `zero <input.zero> -wasm [-o out.wasm]` —— 生成 Rust、编译为 WebAssembly，并输出 `<out>.js` 运行时胶水（可能需要 `rustup target add wasm32-unknown-unknown`）。胶水把 `print` 桥接到宿主控制台、把 `net.*` HTTP 桥接到 fetch/XHR，因此 wasm 也支持 `network` 程序。运行方式：`node out.js` 或在浏览器中加载 `out.wasm`。
+- `zero <input.zero> -errors` —— 静态错误扫描（不构建）：解析并检查整个程序，收集所有语法与语义错误，输出 TOML 风格错误列表（`errors = ["e1", "e2"]`，随后是 `[error.e1]` 段，含 `e1.error` 与 `e1.scope = [1.1, 1.5]`）。`scope` 为 `行.列` 对：整数部分为 1 起始的行号，小数部分为该行内的 1 起始列号（第几个字符）。无错误退出码 0，有错误退出码 1。
+- `zero <input.zero> fmt [-o out.zero]` —— 把源码格式化为规范形式（4 空格缩进、函数体 `{ ... }`、Python 风格控制流块、按优先级补括号、`+=`/`-=`/`*=` 还原）。输出到标准输出，或用 `-o <output>` 写文件。格式化器不保留 `//` 注释。
 - 如果默认链接器缺失（例如没有 MSVC `link.exe`），会自动改用 Rust 工具链自带的 `rust-lld` 链接器重试。
 - Windows 说明：本仓库的 `.cargo/config.toml` 使用 Rust 自带的 `rust-lld` 链接器，因此即使没有 MSVC `link.exe` 也能构建。
 
@@ -186,6 +188,7 @@ crates/              workspace 库 crate
   zeroc-scope/       作用域分析 + 函数 / 类型检查
   zeroc-import/      头文件加载（标准库、加载器）
   zeroc-codegen/     Rust 代码生成（输出辅助、运行时）
+  zeroc-fmt/         源码格式化（pretty-printer）
 std/
   stream.rs          底层流抽象（shell / 文件）
   stream_io.rs       IO 流封装
@@ -201,7 +204,7 @@ std/
   sleep.zh           睡眠库（Zero 实现）：sleep(ms)
   network_stream.rs  底层网络：TCP + HTTP/HTTPS（ureq + rustls）
   network.zh         网络库（Zero 实现）：connect / send / recv / close
-  lowlevel_server.rs  底层 Flask 风格 HTTP 服务器（纯 std::net）
+  lowlevel_server.rs  底层 Zero 风格 HTTP 服务器（纯 std::net）
 examples/            可运行示例（hello_zero、func_typed、control_demo……）
 ```
 

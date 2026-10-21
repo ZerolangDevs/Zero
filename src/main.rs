@@ -9,6 +9,7 @@ use std::process::{Command, ExitCode};
 use zeroc_ast as ast;
 use zeroc_codegen as codegen;
 use zeroc_diag as diag;
+use zeroc_fmt as fmt;
 use zeroc_import as import;
 use zeroc_parser as parser;
 use zeroc_scope as scope;
@@ -20,12 +21,14 @@ Zero compiler (zero)
 Compiles Zero source code to native executables, Rust source, or WebAssembly.
 
 USAGE:
-    zero <input.zero> [-rust | -wasm] [-o1 | -o2 | -o3] [-o <output>]
+    zero <input.zero> [-rust | -wasm | -errors | fmt] [-o1 | -o2 | -o3] [-o <output>]
 
 MODES:
     (default)   Build a native executable for the current platform
     -rust       Only generate Rust source code (stdout, or -o <file.rs>)
     -wasm       Generate Rust and compile it to WebAssembly (.wasm)
+    -errors     Static error scan only (no build); prints a TOML error list
+    fmt         Format the source file (stdout, or -o <output>)
 
 OPTIONS:
     -o1           No optimization (fastest build)
@@ -59,6 +62,8 @@ fn main() -> ExitCode {
     let mut output: Option<PathBuf> = None;
     let mut mode_rust = false;
     let mut mode_wasm = false;
+    let mut mode_errors = false;
+    let mut mode_fmt = false;
     // 优化档位：1 = 无，2 = 高性价比（默认），3 = 完全优化。
     let mut opt_level: u8 = 2;
     let mut i = 1;
@@ -66,6 +71,10 @@ fn main() -> ExitCode {
         match args[i].as_str() {
             "-rust" => mode_rust = true,
             "-wasm" => mode_wasm = true,
+            "-errors" => mode_errors = true,
+            "errors" => mode_errors = true,
+            "-fmt" => mode_fmt = true,
+            "fmt" => mode_fmt = true,
             "-o1" => opt_level = 1,
             "-o2" => opt_level = 2,
             "-o3" => opt_level = 3,
@@ -89,8 +98,11 @@ fn main() -> ExitCode {
         i += 1;
     }
 
-    if mode_rust && mode_wasm {
-        eprintln!("error: choose one of -rust / -wasm (not both)");
+    if mode_rust && mode_wasm
+        || mode_errors && (mode_rust || mode_wasm)
+        || mode_fmt && (mode_rust || mode_wasm || mode_errors)
+    {
+        eprintln!("error: choose one of -rust / -wasm / -errors / fmt (not both)");
         return ExitCode::FAILURE;
     }
 
@@ -99,6 +111,13 @@ fn main() -> ExitCode {
         eprint!("{USAGE}");
         return ExitCode::FAILURE;
     };
+
+    if mode_errors {
+        return run_errors(&input);
+    }
+    if mode_fmt {
+        return run_fmt(&input, output.as_deref());
+    }
 
     match compile(&input) {
         Ok(c) => {
@@ -485,6 +504,147 @@ fn compile(input: &Path) -> Result<Compiled, CompileError> {
         uses_win: loader.win_imported,
         uses_net: loader.net_imported,
     })
+}
+
+/// `-errors`: static error scan only (no build). Collects every syntax
+/// and semantic error and prints them as a TOML-style list.
+fn run_errors(input: &Path) -> ExitCode {
+    let file = input.display().to_string();
+    let src = match std::fs::read_to_string(input) {
+        Ok(s) => s,
+        Err(e) => {
+            let err = CompileError::new(
+                format!("cannot read '{}': {e}", input.display()),
+                file.clone(),
+            );
+            print_errors_toml(&[err], "");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // 1) Syntax scan: collect every syntax error, resuming per line.
+    let (prog, mut errors) = parser::parse_collect(&src, &file);
+
+    // 2) Entry-point consistency checks (only on a clean parse).
+    if errors.is_empty() {
+        let has_top = prog
+            .items
+            .iter()
+            .any(|item| matches!(item, ast::Item::Top(_)));
+        let has_main = prog.has_main();
+        if has_top && has_main {
+            errors.push(CompileError::new(
+                "the entry point is the top-level code; remove 'fn main'",
+                file.clone(),
+            ));
+        } else if !has_top && !has_main {
+            errors.push(CompileError::new(
+                "no top-level statements or 'fn main' function found",
+                file.clone(),
+            ));
+        }
+    }
+
+    // 3) Semantic scan (only on a clean parse, to avoid a partial AST).
+    if errors.is_empty() {
+        let root = input.parent().unwrap_or(Path::new("."));
+        let mut loader = import::Loader::new(root);
+        let loaded = loader
+            .register_main(&prog, &file)
+            .and_then(|_| loader.load(&prog, &file));
+        match loaded {
+            Ok(()) => {
+                let fns = &loader.functions;
+                let io_imported = loader.io_imported;
+                let mut analyzer =
+                    scope::ScopeAnalyzer::new(fns, &file, io_imported, loader.sys_imported);
+                errors.extend(analyzer.analyze_program_collect(&prog));
+                for (display, header_prog) in &loader.zero_headers {
+                    let mut header_analyzer =
+                        scope::ScopeAnalyzer::new(fns, display, io_imported, loader.sys_imported);
+                    errors.extend(header_analyzer.analyze_program_collect(header_prog));
+                }
+            }
+            Err(e) => errors.push(e),
+        }
+    }
+
+    // 4) Print the TOML-style error list.
+    print_errors_toml(&errors, &src);
+    if errors.is_empty() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// Print collected errors as a TOML-style list:
+/// ```text
+/// errors = ["e1", "e2"]
+/// [error.e1]
+/// e1.error = "message"
+/// e1.scope = [1.1, 1.5]
+/// ```
+/// `scope` uses `line.column` pairs: the integer part is the 1-based line
+/// number, the fractional part is the column (1-based character offset
+/// within that line).
+fn print_errors_toml(errors: &[CompileError], src: &str) {
+    if errors.is_empty() {
+        println!("errors = []");
+        return;
+    }
+    let names: Vec<String> = (1..=errors.len()).map(|i| format!("e{i}")).collect();
+    let name_list: Vec<String> = names.iter().map(|n| format!("{n:?}")).collect();
+    println!("errors = [{}]", name_list.join(", "));
+    for (err, name) in errors.iter().zip(&names) {
+        let (start_line, start_col) = match err.span {
+            Some(s) => diag::line_col(src, s.start),
+            None => (0, 0),
+        };
+        let (end_line, end_col) = match err.span {
+            Some(s) => diag::line_col(src, s.end),
+            None => (0, 0),
+        };
+        println!("[error.{name}]");
+        println!("{name}.error = {:?}", err.message);
+        println!("{name}.scope = [{start_line}.{start_col}, {end_line}.{end_col}]");
+    }
+}
+
+/// `fmt`: parse and regenerate the source in canonical form. Writes to
+/// stdout, or to `-o <output>` when given.
+fn run_fmt(input: &Path, output: Option<&Path>) -> ExitCode {
+    let file = input.display().to_string();
+    let src = match std::fs::read_to_string(input) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: cannot read '{}': {e}", input.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let formatted = match fmt::format(&src, &file) {
+        Ok(s) => s,
+        Err(err) => {
+            eprintln!("{}", render_error(&err));
+            return ExitCode::FAILURE;
+        }
+    };
+    match output {
+        Some(out) => {
+            if let Err(e) = std::fs::write(out, formatted) {
+                eprintln!("error: cannot write '{}': {e}", out.display());
+                return ExitCode::FAILURE;
+            }
+            println!("✓ formatted {}", out.display());
+        }
+        None => {
+            print!("{formatted}");
+            if !formatted.ends_with('\n') {
+                println!();
+            }
+        }
+    }
+    ExitCode::SUCCESS
 }
 
 /// Render an error; uses the file on disk for the source snippet.

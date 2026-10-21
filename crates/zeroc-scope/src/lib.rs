@@ -46,6 +46,10 @@ pub struct ScopeAnalyzer<'a> {
     /// Variables created with `name<win> = { ... }`.
     win_vars: HashSet<String>,
     file: String,
+    /// Error-collection mode: when true, statement errors are accumulated
+    /// in `collected` and analysis continues with the next statement.
+    collect: bool,
+    collected: Vec<CompileError>,
 }
 
 impl<'a> ScopeAnalyzer<'a> {
@@ -68,6 +72,8 @@ impl<'a> ScopeAnalyzer<'a> {
             loop_depth: 0,
             win_vars: HashSet::new(),
             file: file.to_string(),
+            collect: false,
+            collected: Vec::new(),
         }
     }
 
@@ -97,6 +103,36 @@ impl<'a> ScopeAnalyzer<'a> {
         Ok(())
     }
 
+    /// Analyse the whole program in error-collection mode: every
+    /// statement/function error is collected, analysis continues, and the
+    /// collected errors are returned.
+    pub fn analyze_program_collect(&mut self, prog: &Program) -> Vec<CompileError> {
+        self.collect = true;
+        self.collected.clear();
+        let tops: Vec<Stmt> = prog
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Top(stmt) => Some(stmt.clone()),
+                _ => None,
+            })
+            .collect();
+        if !tops.is_empty() {
+            if let Err(e) = self.analyze_block(&Block::Stmts(tops), None) {
+                self.collected.push(e);
+            }
+        }
+        for item in &prog.items {
+            if let Item::Function(f) = item {
+                if let Err(e) = self.analyze_function(f) {
+                    self.collected.push(e);
+                }
+            }
+        }
+        self.collect = false;
+        std::mem::take(&mut self.collected)
+    }
+
     fn analyze_function(&mut self, f: &Function) -> Result<(), CompileError> {
         let Block::Stmts(stmts) = &f.body else {
             return Err(self.err("function body must be a highlevel block", f.span));
@@ -119,174 +155,184 @@ impl<'a> ScopeAnalyzer<'a> {
 
     fn analyze_stmts(&mut self, stmts: &[Stmt]) -> Result<(), CompileError> {
         for stmt in stmts {
-            match stmt {
-                Stmt::Assign {
-                    name,
-                    value,
-                    is_const,
-                    span,
-                } => {
-                    self.analyze_expr(value)?;
-                    // Dynamic semantics: update the nearest existing binding
-                    // (across scopes, so loops can accumulate), otherwise
-                    // create a new variable in the current scope.
-                    let existing = self
-                        .scopes
-                        .iter()
-                        .rev()
-                        .find_map(|sc| sc.symbols.get(name).copied());
-                    let msg = match existing {
-                        Some(_) if *is_const => Some(format!(
-                            "cannot declare immutable variable '{name}': it already exists"
-                        )),
-                        Some(true) => Some(format!("cannot assign to immutable variable '{name}'")),
-                        Some(false) | None => None,
-                    };
-                    if let Some(m) = msg {
-                        return Err(self.err(m, *span));
-                    }
-                    if existing.is_none() {
-                        self.current_mut().symbols.insert(name.clone(), *is_const);
-                    }
+            if let Err(e) = self.analyze_stmt(stmt) {
+                if self.collect {
+                    self.collected.push(e);
+                } else {
+                    return Err(e);
                 }
-                Stmt::Expr(expr) => {
-                    // Bare identifiers as statements are allowed (no-op).
-                    self.analyze_expr(expr)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Analyse a single statement.
+    fn analyze_stmt(&mut self, stmt: &Stmt) -> Result<(), CompileError> {
+        match stmt {
+            Stmt::Assign {
+                name,
+                value,
+                is_const,
+                span,
+            } => {
+                self.analyze_expr(value)?;
+                // Dynamic semantics: update the nearest existing binding
+                // (across scopes, so loops can accumulate), otherwise
+                // create a new variable in the current scope.
+                let existing = self
+                    .scopes
+                    .iter()
+                    .rev()
+                    .find_map(|sc| sc.symbols.get(name).copied());
+                let msg = match existing {
+                    Some(_) if *is_const => Some(format!(
+                        "cannot declare immutable variable '{name}': it already exists"
+                    )),
+                    Some(true) => Some(format!("cannot assign to immutable variable '{name}'")),
+                    Some(false) | None => None,
+                };
+                if let Some(m) = msg {
+                    return Err(self.err(m, *span));
                 }
-                Stmt::Return { value } => {
-                    if let Some(e) = value {
-                        self.analyze_expr(e)?;
-                        if let Some(declared) = self.current_ret {
-                            if let Some(found) = literal_type(e) {
-                                if declared != found {
-                                    return Err(self.err(
-                                        format!(
-                                            "function returns {}, but declared to return {}",
-                                            found.name(),
-                                            declared.name()
-                                        ),
-                                        e.span(),
-                                    ));
-                                }
-                            }
-                        }
-                    }
+                if existing.is_none() {
+                    self.current_mut().symbols.insert(name.clone(), *is_const);
                 }
-                Stmt::Scope { kind, block, span } => {
-                    let _ = span;
-                    match kind {
-                        ScopeKind::HighLevel => {
-                            let Block::Stmts(stmts) = block else {
-                                return Err(
-                                    self.err("highlevel scope cannot contain raw code", *span)
-                                );
-                            };
-                            self.scopes.push(Scope {
-                                symbols: HashMap::new(),
-                            });
-                            let result = self.analyze_stmts(stmts);
-                            self.scopes.pop();
-                            result?;
-                        }
-                        ScopeKind::LowLevel => {
-                            // Raw Rust: nothing to analyse at Zero level.
-                        }
-                    }
-                }
-                Stmt::If {
-                    cond,
-                    then,
-                    else_ifs,
-                    else_branch,
-                } => {
-                    self.analyze_expr(cond)?;
-                    self.analyze_block(then, None)?;
-                    for (econd, ebody) in else_ifs {
-                        self.analyze_expr(econd)?;
-                        self.analyze_block(ebody, None)?;
-                    }
-                    if let Some(ebody) = else_branch {
-                        self.analyze_block(ebody, None)?;
-                    }
-                }
-                Stmt::WinCreate { name, args, span } => {
-                    self.win_vars.insert(name.clone());
-                    self.current_mut().symbols.insert(name.clone(), false);
-                    for (arg_name, value) in args {
-                        match arg_name.as_str() {
-                            "x" | "y" | "size" => self.analyze_expr(value)?,
-                            other => {
+            }
+            Stmt::Expr(expr) => {
+                // Bare identifiers as statements are allowed (no-op).
+                self.analyze_expr(expr)?;
+            }
+            Stmt::Return { value } => {
+                if let Some(e) = value {
+                    self.analyze_expr(e)?;
+                    if let Some(declared) = self.current_ret {
+                        if let Some(found) = literal_type(e) {
+                            if declared != found {
                                 return Err(self.err(
-                                    format!("unknown window option '{other}' (x, y, size)"),
-                                    *span,
+                                    format!(
+                                        "function returns {}, but declared to return {}",
+                                        found.name(),
+                                        declared.name()
+                                    ),
+                                    e.span(),
                                 ));
                             }
                         }
                     }
                 }
-                Stmt::Break { span } => {
-                    if self.loop_depth == 0 {
-                        return Err(self.err("'break' outside of a loop", *span));
+            }
+            Stmt::Scope { kind, block, span } => {
+                let _ = span;
+                match kind {
+                    ScopeKind::HighLevel => {
+                        let Block::Stmts(stmts) = block else {
+                            return Err(self.err("highlevel scope cannot contain raw code", *span));
+                        };
+                        self.scopes.push(Scope {
+                            symbols: HashMap::new(),
+                        });
+                        let result = self.analyze_stmts(stmts);
+                        self.scopes.pop();
+                        result?;
+                    }
+                    ScopeKind::LowLevel => {
+                        // Raw Rust: nothing to analyse at Zero level.
                     }
                 }
-                Stmt::Continue { span } => {
-                    if self.loop_depth == 0 {
-                        return Err(self.err("'continue' outside of a loop", *span));
+            }
+            Stmt::If {
+                cond,
+                then,
+                else_ifs,
+                else_branch,
+            } => {
+                self.analyze_expr(cond)?;
+                self.analyze_block(then, None)?;
+                for (econd, ebody) in else_ifs {
+                    self.analyze_expr(econd)?;
+                    self.analyze_block(ebody, None)?;
+                }
+                if let Some(ebody) = else_branch {
+                    self.analyze_block(ebody, None)?;
+                }
+            }
+            Stmt::WinCreate { name, args, span } => {
+                self.win_vars.insert(name.clone());
+                self.current_mut().symbols.insert(name.clone(), false);
+                for (arg_name, value) in args {
+                    match arg_name.as_str() {
+                        "x" | "y" | "size" => self.analyze_expr(value)?,
+                        other => {
+                            return Err(self.err(
+                                format!("unknown window option '{other}' (x, y, size)"),
+                                *span,
+                            ));
+                        }
                     }
                 }
-                Stmt::While { cond, body } => {
-                    self.analyze_expr(cond)?;
-                    self.loop_depth += 1;
-                    let result = self.analyze_block(body, None);
-                    self.loop_depth -= 1;
-                    result?;
+            }
+            Stmt::Break { span } => {
+                if self.loop_depth == 0 {
+                    return Err(self.err("'break' outside of a loop", *span));
                 }
-                Stmt::For {
-                    var,
-                    start,
-                    end,
-                    step,
-                    body,
-                    ..
-                } => {
-                    self.analyze_expr(start)?;
-                    self.analyze_expr(end)?;
-                    self.analyze_expr(step)?;
-                    self.loop_depth += 1;
-                    let result = self.analyze_block(body, Some(var));
-                    self.loop_depth -= 1;
-                    result?;
+            }
+            Stmt::Continue { span } => {
+                if self.loop_depth == 0 {
+                    return Err(self.err("'continue' outside of a loop", *span));
                 }
-                Stmt::Each { var, iter, body } => {
-                    self.analyze_expr(iter)?;
-                    self.loop_depth += 1;
-                    let result = self.analyze_block(body, Some(var));
-                    self.loop_depth -= 1;
-                    result?;
+            }
+            Stmt::While { cond, body } => {
+                self.analyze_expr(cond)?;
+                self.loop_depth += 1;
+                let result = self.analyze_block(body, None);
+                self.loop_depth -= 1;
+                result?;
+            }
+            Stmt::For {
+                var,
+                start,
+                end,
+                step,
+                body,
+                ..
+            } => {
+                self.analyze_expr(start)?;
+                self.analyze_expr(end)?;
+                self.analyze_expr(step)?;
+                self.loop_depth += 1;
+                let result = self.analyze_block(body, Some(var));
+                self.loop_depth -= 1;
+                result?;
+            }
+            Stmt::Each { var, iter, body } => {
+                self.analyze_expr(iter)?;
+                self.loop_depth += 1;
+                let result = self.analyze_block(body, Some(var));
+                self.loop_depth -= 1;
+                result?;
+            }
+            Stmt::Switch {
+                value,
+                arms,
+                default,
+            } => {
+                self.analyze_expr(value)?;
+                for (av, abody) in arms {
+                    self.analyze_expr(av)?;
+                    self.analyze_block(abody, None)?;
                 }
-                Stmt::Switch {
-                    value,
-                    arms,
-                    default,
-                } => {
-                    self.analyze_expr(value)?;
-                    for (av, abody) in arms {
-                        self.analyze_expr(av)?;
-                        self.analyze_block(abody, None)?;
-                    }
-                    if let Some(dbody) = default {
-                        self.analyze_block(dbody, None)?;
-                    }
+                if let Some(dbody) = default {
+                    self.analyze_block(dbody, None)?;
                 }
-                Stmt::Try {
-                    body,
-                    catch_var,
-                    catch_body,
-                } => {
-                    self.analyze_block(body, None)?;
-                    if let Some(cbody) = catch_body {
-                        self.analyze_block(cbody, catch_var.as_deref())?;
-                    }
+            }
+            Stmt::Try {
+                body,
+                catch_var,
+                catch_body,
+            } => {
+                self.analyze_block(body, None)?;
+                if let Some(cbody) = catch_body {
+                    self.analyze_block(cbody, catch_var.as_deref())?;
                 }
             }
         }
@@ -691,6 +737,40 @@ mod tests {
         let prog = parse(src, "test.zero").unwrap();
         let fns = functions_of(&prog);
         ScopeAnalyzer::new(&fns, "test.zero", io_imported, false).analyze_program(&prog)
+    }
+
+    #[test]
+    fn collect_multiple_semantic_errors() {
+        let src = "import io\nx = 10\nprint(undefined_var)\na = nope()\nname = \"abc\"<const>\nname = \"def\"\nb = 1\n";
+        let prog = parse(src, "test.zero").unwrap();
+        let fns = functions_of(&prog);
+        let errors =
+            ScopeAnalyzer::new(&fns, "test.zero", true, false).analyze_program_collect(&prog);
+        assert_eq!(
+            errors.len(),
+            3,
+            "got: {:?}",
+            errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        );
+        assert!(errors
+            .iter()
+            .any(|e| e.message.contains("undefined variable 'undefined_var'")));
+        assert!(errors
+            .iter()
+            .any(|e| e.message.contains("unknown function 'nope'")));
+        assert!(errors.iter().any(|e| e
+            .message
+            .contains("cannot assign to immutable variable 'name'")));
+    }
+
+    #[test]
+    fn collect_is_clean_when_no_errors() {
+        let src = "import io\nx = 10\nprint(x)\nb = 1\n";
+        let prog = parse(src, "test.zero").unwrap();
+        let fns = functions_of(&prog);
+        let errors =
+            ScopeAnalyzer::new(&fns, "test.zero", true, false).analyze_program_collect(&prog);
+        assert!(errors.is_empty());
     }
 
     #[test]

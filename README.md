@@ -253,6 +253,18 @@ cargo run -- examples\hello.zero -o3   # full optimization (LTO)
   wasm32-unknown-unknown` may be needed). The glue bridges `print` to the
   host console and `net.*` HTTP to `fetch`/XHR, so `network` programs work
   in wasm too. Run with `node out.js` or load `out.wasm` in a browser.
+- `zero <input.zero> -errors` — static error scan only (no build): parses
+  and checks the whole program, collects every syntax and semantic error,
+  and prints them as a TOML-style list (`errors = ["e1", "e2"]`, then a
+  `[error.e1]` section with `e1.error` and `e1.scope = [1.1, 1.5]`).
+  `scope` is `line.column` pairs: the integer part is the 1-based line,
+  the fractional part the column (1-based character offset on that line).
+  Exit code 0 when clean, 1 otherwise.
+- `zero <input.zero> fmt [-o out.zero]` — format the source into canonical
+  form (4-space indent, `{ ... }` function bodies, Python-style control
+  blocks, precedence-safe parentheses, `+=`/`-=`/`*=` restored). Writes to
+  stdout, or to `-o <output>`. `//` comments are not preserved by the
+  formatter.
 - If the default linker is missing (e.g. no MSVC `link.exe`), it retries
   with the bundled `rust-lld`.
 - Windows note: this repo's `.cargo/config.toml` uses Rust's bundled
@@ -271,6 +283,7 @@ crates/              workspace of library crates
   zeroc-scope/       scope analysis + function/type checks
   zeroc-import/      header loading (stdlib, loader)
   zeroc-codegen/     Rust codegen (emit, runtime)
+  zeroc-fmt/         pretty-printer / source formatter
 std/
   stream.rs          low-level stream abstraction (shell / file)
   stream_io.rs       IO stream wrapper
